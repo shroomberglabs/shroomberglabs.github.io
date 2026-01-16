@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="author" content="Joshua Alberstadt">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shroomberg Labs</title>
+<style>
+  /* =========================
+     THEME VARIABLES
+  ========================= */
+  :root {
+    --main-font: 'Arial Black', sans-serif;
+    --primary-color: black;
+    --secondary-color: gray;
+    --bg-color: white;
+    --logo-width: 600px;
+    --logo-height: 200px;
+    --logo-shrink-width: 400px;
+    --logo-shrink-height: 200px;
+    --logo-top: 20px;
+    --logo-left: 20px;
+    --nav-font-size: 18px;
+    --nav-margin-top: 100px;
+    --nav-gap: 10px;
+    --app-button-width: 140px;
+    --app-button-height: 140px;
+    --app-button-bg: #fafafa;
+    --app-button-border: #ddd;
+    --app-button-radius: 8px;
+    --app-button-hover-scale: 1.05;
+    --app-button-icon-size: 100%;
+    --app-grid-gap: 20px;
+  }
+
+  /* =========================
+     GLOBAL STYLES
+  ========================= */
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: var(--main-font); }
+  body { background: var(--bg-color); overflow-x: hidden; }
+
+  /* =========================
+     SVG TRACER / LOGO
+  ========================= */
+  #logoSVGContainer {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    width: var(--logo-width);
+    height: var(--logo-height);
+    transform: translate(-50%, -50%);
+    z-index: 1000;
+  }
+
+  #logoSVG {
+    width: 100%;
+    height: 100%;
+  }
+
+  .svg-text {
+    font-family: var(--main-font);
+    font-size: 48px;
+    font-weight: bold;
+    fill: none;
+    stroke: var(--primary-color);
+    stroke-width: 2;
+    stroke-dasharray: 1000;
+    stroke-dashoffset: 1000;
+    animation: draw 3s forwards;
+  }
+
+  @keyframes draw {
+    to { stroke-dashoffset: 0; }
+  }
+
+  /* =========================
+     NAVIGATION
+  ========================= */
+  nav {
+    position: fixed;
+    top: var(--nav-margin-top);
+    right: var(--logo-left);
+    font-family: var(--main-font);
+    font-size: var(--nav-font-size);
+    opacity: 0;
+    transition: opacity 0.5s ease-in-out;
+    display: flex;
+    flex-direction: row; 
+    gap: var(--nav-gap);
+  }
+  nav a {
+    text-decoration: none;
+    color: var(--primary-color);
+    font-weight: bold;
+    transition: color 0.2s;
+  }
+  nav a:hover { color: var(--secondary-color); }
+
+  /* =========================
+     APP GRID
+  ========================= */
+  #appList {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(var(--app-button-width), 1fr));
+    justify-items: center;
+    gap: var(--app-grid-gap);
+    margin: calc(var(--nav-margin-top) + 60px) 20px 20px 20px;
+    transition: opacity 0.3s ease-in-out;
+  }
+
+  .app-button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: var(--app-button-width);
+    height: var(--app-button-height);
+    padding: 10px;
+    border: 1px solid var(--app-button-border);
+    border-radius: var(--app-button-radius);
+    cursor: pointer;
+    transition: transform 0.2s;
+    background: var(--app-button-bg);
+    text-align: center;
+  }
+  .app-button:hover { transform: scale(var(--app-button-hover-scale)); }
+  .app-button img {
+    width: var(--app-button-icon-size);
+    height: var(--app-button-icon-size);
+    margin-bottom: 8px;
+  }
+  .app-button span { font-size: 14px; }
+
+  /* =========================
+     MINI-APP CONTAINER
+  ========================= */
+  #appContainer {
+    padding: 20px;
+    min-height: 400px;
+    transition: opacity 0.3s ease-in-out;
+  }
+
+  /* =========================
+     HOME BUTTON (ALWAYS OVERLAY)
+  ========================= */
+  #homeButton {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 12px 16px;
+    background: rgba(0,0,0,0.7);
+    color: var(--bg-color);
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    display: none;
+    z-index: 9999;
+  }
+</style>
+</head>
+<body>
+
+<!-- SVG Logo Tracing -->
+<div id="logoSVGContainer">
+  <svg id="logoSVG" viewBox="0 0 600 100">
+    <text class="svg-text" x="50%" y="50%" dominant-baseline="middle" text-anchor="middle">
+      SHROOMBERG LABS
+    </text>
+  </svg>
+</div>
+
+<!-- NAVIGATION -->
+<nav id="mainNav">
+  <a href="www.linkedin.com/in/shroomberglabs">linkedin</a>
+  <a href="https://github.com/shroomberglabs">github</a>
+</nav>
+
+<!-- APP GRID -->
+<div id="appList"></div>
+
+<!-- MINI-APP CONTENT -->
+<div id="appContainer"></div>
+
+<!-- HOME BUTTON -->
+<button id="homeButton" onclick="restoreHome()">Home</button>
+
+<script>
+  /* =========================
+     APP DATA
+  ========================= */
+  const apps = [
+    { name: "FinePlan", icon: "https://raw.githubusercontent.com/shroomberglabs/shroombergcontent/68da9782155c8840bf086a7bd065439c5c9e3cc5/Mycel_Gold_Shroomberg-removebg-preview.png", url: "https://fineplan.neocities.org/" },
+    { name: "Note from Devs", icon: "icon-notes.png", html: "<h2>Note</h2><p>More applications are currently in development. If you are looking to connect with Shroomberg Labs, please reach out via Github.</p>" },
+    
+  ];
+
+  const appList = document.getElementById('appList');
+  const appContainer = document.getElementById('appContainer');
+  const homeButton = document.getElementById('homeButton');
+  const nav = document.getElementById('mainNav');
+  const logoSVGContainer = document.getElementById('logoSVGContainer');
+
+
+/* =========================
+   POP-UP IFRAME MODAL
+========================= */
+const popContainer = document.createElement('div');
+Object.assign(popContainer.style,{
+  display:'none',
+  position:'fixed',
+  top:'0',
+  left:'0',
+  width:'100%',
+  height:'100%',
+  background:'rgba(0,0,0,0.6)',
+  backdropFilter:'blur(2px)',
+  opacity:0,
+  transition:'opacity 0.3s',
+  zIndex:10000,
+  padding:'20px',
+  boxSizing:'border-box'
+});
+
+const popContent = document.createElement('iframe');
+Object.assign(popContent.style,{
+  width:'100%',
+  height:'100%',
+  border:'none',
+  borderRadius:'8px',
+  boxShadow:'0 4px 20px rgba(0,0,0,0.4)'
+});
+
+const closeBtn = document.createElement('button');
+closeBtn.textContent = 'Close';
+Object.assign(closeBtn.style,{
+  position:'absolute',
+  top:'10px',
+  right:'10px',
+  padding:'8px 12px',
+  cursor:'pointer',
+  background:'#333',
+  color:'white',
+  border:'none',
+  borderRadius:'4px',
+  zIndex:10001
+});
+closeBtn.onclick = () => {
+  popContainer.style.opacity = 0;
+  setTimeout(()=> { popContainer.style.display = 'none'; popContent.src = ''; }, 300);
+};
+
+popContainer.appendChild(popContent);
+popContainer.appendChild(closeBtn);
+document.body.appendChild(popContainer);
+
+/* =========================
+   OPEN URL IN IFRAME MODAL
+========================= */
+function openPop(url){
+  popContent.src = url;
+  popContainer.style.display = 'block';
+  setTimeout(()=>{ popContainer.style.opacity = 1; }, 10);
+}
+
+/* =========================
+   FETCH GITHUB HTML
+========================= */
+async function loadGithubHTML(url) {
+  try {
+    const res = await fetch(url, {
+      referrerPolicy: 'no-referrer',
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to fetch HTML');
+    }
+
+    const rawHTML = await res.text();
+    openPop(wrapHTMLScripts(rawHTML));
+
+  } catch (e) {
+    console.error(e);
+    alert('Failed to load GitHub HTML: ' + e.message);
+  }
+}
+
+
+  /* =========================
+     RENDER APP GRID
+  ========================= */
+  function renderHome() {
+    // Show everything
+    appContainer.style.display = '';
+    nav.style.display = '';
+    logoSVGContainer.style.display = '';
+    appList.style.display = 'grid';
+
+    appContainer.innerHTML = '';
+    appList.innerHTML = '';
+    apps.forEach(app => {
+      const btn = document.createElement('div');
+      btn.className = 'app-button';
+      btn.innerHTML = `<img src="${app.icon}" alt="${app.name}"><span>${app.name}</span>`;
+     btn.onclick = () => {
+  if(app.url){
+    openPop(app.url); // iframe modal
+  } else {
+    loadApp(app);     // normal innerHTML
+  }
+};
+
+      appList.appendChild(btn);
+    });
+    homeButton.style.display = 'none';
+  }
+
+  /* =========================
+     LOAD APP CONTENT
+  ========================= */
+  function loadApp(app) {
+    // Hide everything except home button
+    appList.style.display = 'none';
+    nav.style.display = 'none';
+    logoSVGContainer.style.display = 'none';
+
+    appContainer.style.display = 'block';
+    appContainer.innerHTML = app.html;
+
+    homeButton.style.display = 'block';
+  }
+
+  function restoreHome() {
+    renderHome();
+  }
+
+  /* =========================
+     LOGO TRACER ANIMATION + SHRINK
+  ========================= */
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      // Shrink and move logo to top-left
+      logoSVGContainer.style.transition = 'all 1s ease-in-out';
+      logoSVGContainer.style.width = 'var(--logo-shrink-width)';
+      logoSVGContainer.style.height = 'var(--logo-shrink-height)';
+      logoSVGContainer.style.top = 'var(--logo-top)';
+      logoSVGContainer.style.left = 'var(--logo-left)';
+      logoSVGContainer.style.transform = 'translate(0, 0)';
+
+      // Fade in nav below logo after shrink
+      setTimeout(() => {
+        nav.style.opacity = 1;
+        renderHome();
+      }, 1000);
+    }, 3000); // match SVG stroke draw duration
+  });
+
+  
+</script>
+
+</body>
+</html>
