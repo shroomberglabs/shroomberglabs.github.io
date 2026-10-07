@@ -1,0 +1,978 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WAR OF THE WORLDS — DC</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#09070d;font-family:monospace}canvas{display:block;width:100vw;height:100vh;image-rendering:pixelated;background:#171222;cursor:crosshair}
+#hud{position:fixed;left:14px;top:12px;z-index:3;color:#fff;text-shadow:2px 2px #000;pointer-events:none;font-size:14px;line-height:1.1}.title{position:fixed;right:14px;top:10px;z-index:3;color:#f8e8bd;text-align:right;text-shadow:3px 3px #000;font:bold 27px Impact,monospace;letter-spacing:1px;pointer-events:none}.title small{display:block;font:10px monospace;letter-spacing:0}
+.bar{width:200px;height:14px;border:2px solid #08060a;background:#35151b;margin:4px 0 7px}.fill{height:100%;width:100%}.hp{background:#d94c45}.rep{background:#58bad5}.hint{position:fixed;z-index:3;bottom:10px;left:50%;transform:translateX(-50%);padding:7px 10px;background:#f0dfb5;color:#171018;border:3px solid #171018;box-shadow:4px 4px #0008;font-size:12px;white-space:nowrap;pointer-events:none}
+#panel{position:fixed;inset:0;z-index:10;display:none;align-items:center;justify-content:center;background:#000b;padding:20px}.card{width:min(760px,94vw);max-height:84vh;overflow:auto;background:#f3e2b9;color:#18131a;border:6px solid #18131a;box-shadow:10px 10px #000;padding:22px;font-family:monospace}.card h1{margin:0 0 12px;font:36px Impact,monospace;letter-spacing:2px}.card p{line-height:1.5}.card .scene{min-height:120px;border:3px solid #392733;background:#ead4a3;padding:14px;margin:12px 0}.card button{border:3px solid #18131a;background:#b52f35;color:white;padding:10px 14px;margin:4px;font:bold 14px monospace;cursor:pointer;box-shadow:4px 4px #18131a}.card button:active{transform:translate(2px,2px);box-shadow:2px 2px #18131a}.muted{opacity:.72;font-size:12px}#toast{position:fixed;right:18px;bottom:52px;z-index:12;background:#17131de8;color:#f4e5bd;border:2px solid #f4e5bd;padding:8px 10px;font:bold 11px monospace;opacity:0;transform:translateY(8px);transition:.18s;pointer-events:none}#toast.show{opacity:1;transform:translateY(0)}.key{display:inline-block;border:2px solid #40303a;padding:2px 5px;margin:0 2px;background:#f8edcf;font-weight:bold}
+@media(max-width:700px){.hint{font-size:10px;max-width:92vw;white-space:normal;text-align:center}.title{font-size:20px}.bar{width:140px}.card h1{font-size:29px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud"><b>PUBLIC CONFIDENCE</b><div class="bar"><div id="rep" class="fill rep"></div></div><b>CIVILITY</b><div class="bar"><div id="hp" class="fill hp"></div></div><span id="stats"></span></div>
+<div class="title">WAR OF THE WORLDS<small>WASHINGTON, D.C. — THE CONSTITUTION IS MISSING</small></div>
+<div class="hint">A/D or ←/→ MOVE • W/SPACE JUMP • STOMP ENEMIES • J DEBATE • E INTERACT • CLICK RECEIPT • K SAVE • ESC PAUSE</div><div id="toast"></div>
+<div id="panel"><div class="card" id="card"></div></div>
+<script>
+'use strict';
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const VIEW={w:1280,h:720};let dpr=1;
+function resize(){dpr=Math.min(window.devicePixelRatio||1,2);canvas.width=VIEW.w*dpr;canvas.height=VIEW.h*dpr;canvas.style.width='100vw';canvas.style.height='100vh';ctx.setTransform(dpr,0,0,dpr,0,0)}window.addEventListener('resize',resize);resize();
+const input={keys:new Set(),pressed:new Set(),mouseX:0,mouseY:0,mouseDown:false};
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(!input.keys.has(k))input.pressed.add(k);input.keys.add(k);if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k))e.preventDefault();if(k==='escape')togglePause()});
+window.addEventListener('keyup',e=>input.keys.delete(e.key.toLowerCase()));
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();input.mouseX=(e.clientX-r.left)/r.width*VIEW.w;input.mouseY=(e.clientY-r.top)/r.height*VIEW.h});canvas.addEventListener('mousedown',()=>input.mouseDown=true);window.addEventListener('mouseup',()=>input.mouseDown=false);
+const down=k=>input.keys.has(k),tap=k=>input.pressed.has(k);
+function clearPressed(){input.pressed.clear()}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function mulberry32(a){return()=>{let t=a+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296}}
+const rand=mulberry32(20260929);
+const LEVEL_COUNT=20,LEVEL_START=6,LEVEL_SPAN=62;
+const TILE=40,WORLD_W=LEVEL_START+LEVEL_COUNT*LEVEL_SPAN+8,WORLD_H=32,WORLD_PX=WORLD_W*TILE;
+const tiles=new Uint8Array(WORLD_W*WORLD_H);
+const tile=(x,y)=>y*WORLD_W+x;
+function solid(x,y){if(x<0||x>=WORLD_W||y>=WORLD_H)return true;return tiles[tile(x,y)]===1}
+function levelBase(level){return LEVEL_START+level*LEVEL_SPAN}
+function makeWorld(){
+  tiles.fill(0);
+  // A continuous concrete street is always available. Raised surfaces are optional
+  // one-tile steps/platforms, so the player never has to clear a gap to progress.
+  const ground=25;
+  for(let x=0;x<WORLD_W;x++) for(let y=ground;y<WORLD_H;y++) tiles[tile(x,y)]=1;
+  const platformOffsets=[[7,12],[18,22],[29,34],[41,46],[52,56]];
+  for(let level=0;level<LEVEL_COUNT;level++){
+    const sx=levelBase(level);
+    for(const [a,b] of platformOffsets){
+      for(let xx=sx+a;xx<sx+b&&xx<WORLD_W;xx++) tiles[tile(xx,24)]=1;
+    }
+  }
+}
+makeWorld();
+function surfaceYAt(px){
+  const tx=clamp(Math.floor(px/TILE),0,WORLD_W-1);
+  for(let y=0;y<WORLD_H;y++) if(solid(tx,y)) return y*TILE;
+  return (WORLD_H-1)*TILE;
+}
+function levelBounds(level){
+  const base=levelBase(level);
+  return {min:Math.max(0,(base-1)*TILE),max:Math.min(WORLD_PX-1,(base+LEVEL_SPAN-2)*TILE)};
+}
+
+const flyers=[];
+const bossBits=[
+ ['THE PERFECT PHONE CALL',['I have the transcript. I also have three copies of the transcript. One is for the transcript committee.','This call was perfect. The follow-up call was also perfect. The voicemail was perfect. We are running out of adjectives.','OBJECTION: the call contained nouns.']],
+ ['THE CERTIFICATION BOSS',['Welcome to the certification process. Please take a number. Your number is 1/147 million.','The ceremonial vote has entered its action-movie phase.','Please remain calm. The parliament has been replaced by a comment section.']],
+ ['THE GARAGE ARCHIVIST',['CLASSIFIED means the box has a little personality.','Please do not open the garage. There are three boxes and a lawn mower with opinions.','I alphabetized the documents by level of national panic.']],
+ ['THE LOCKDOWN PARTY BOSS',['It was not a party. It was a meeting with cake, music and seventeen witnesses.','Please observe social distancing from this karaoke machine.','The official calendar says “work event.” The playlist says otherwise.']],
+ ['THE RESUME WIZARD',['I have worked everywhere. Some of those places are extremely surprised.','My résumé has a cinematic universe.','Every oversight question somehow produces another LinkedIn endorsement.']],
+ ['THE GOLDEN SENATOR',['The gold is for economic stability. The envelope is for… additional stability.','Please do not touch the gold. It has excellent counsel.','I plead not guilty to having extremely shiny pockets.']],
+ ['THE THEATER GOBLIN',['QUIET, PLEASE. THE BOSS IS VAPING THROUGH A PLOT TWIST.','The theater asked for one thing: fewer plot developments in the audience.','I paid for the ticket. Therefore I own the balcony. This is legally how capitalism works.']],
+ ['THE EVACUATION BOSS',['FIRE ALARM? No, no. This is my emergency speedrun.','Every red handle in Washington now requires a congressional hearing.','EXIT THROUGH THE EXIT. Revolutionary concept.']],
+ ['ERIC ADAMS',['The travel desk has upgraded this explanation to business class.','Please put every campaign contribution in the overhead bin before departure.','City Hall has issued a statement, a revised statement and a boarding pass.']],
+ ['THE BOX BOSS',['There are boxes everywhere. Some contain documents. Some contain other boxes.','I have a very secure storage system: put everything in a box and call the box secure.','Inventory update: box, box, box, mystery box, extremely important box.']],
+ ['THE LEDGER BOSS',['Please see page 14. Page 14 says please see page 15.','The ledger is innocent until audited.','Nothing says political thriller like a receipt with a timestamp.']],
+ ['THE SPECIAL COUNSEL',['I have prepared a 300-page report explaining why the report is 300 pages.','Everyone remembers the meeting. Nobody remembers the same meeting.','Please cite your memory in APA format.']],
+ ['THE ODDSMAKER',['I wagered there would be a betting scandal. Compliance has asked me to stop phrasing it that way.','The odds are confidential, except to everyone who saw the odds.','Washington: where even the weather has an over-under.']],
+ ['THE LETTUCE PREMIER',['The lettuce has a strong polling lead. It is also surprisingly good at photosynthesis.','I refuse to resign until the salad tells me to.','Markets are volatile. The produce aisle is not.']],
+ ['THE ETHICS COMMITTEE',['Please turn to Appendix Z. Appendix Z has filed an appeal against Appendix Y.','The report is 157 pages long and somehow contains one sentence about ethics.','Ethics Committee rule one: nobody leaves until somebody finds the footnote.']]
+];
+const agentQuips=[
+ 'PLEASE REMAIN CALM. THIS IS A NORMAL GOVERNMENT BUILDING.',
+ 'I HAVE BEEN BRIEFED TO SAY NOTHING AND I AM EXCELLING.',
+ 'THE RECEIPT IS OUT OF CONTEXT. THE CONTEXT IS ALSO CLASSIFIED.',
+ 'I REPRESENT THE INTERESTS OF A VERY IMPORTANT SPREADSHEET.',
+ 'MY SUPERVISOR SAID THIS WOULD BE A SAFE JOB.',
+ 'I HAVE NEVER SEEN SO MANY CAMERAS IN ONE DEMOCRACY.',
+ 'PLEASE DIRECT ALL QUESTIONS TO THE GUY RUNNING AWAY.',
+ 'THIS IS ABOVE MY PAY GRADE AND SOMEHOW BELOW MY PAY GRADE.'
+];
+const neighborhoods=[
+ {name:'CAPITOL HILL',style:'capitol',street:'formal',landmark:'capitol',palette:['#8f493c','#a85b49','#c5b19a','#75504a'],trim:'#d3c1a8',window:'#d8c58f',accent:'#365d49',trees:3},
+ {name:'PENN QUARTER',style:'downtown',street:'downtown',landmark:'arch',palette:['#555b63','#786b5e','#9b8d7b','#454b53'],trim:'#c2b8a6',window:'#d8c887',accent:'#b43b38',trees:1},
+ {name:'FOGGY BOTTOM',style:'institutional',street:'campus',landmark:'kennedy',palette:['#8b8173','#b5ac9b','#666f79','#9c927f'],trim:'#d4cdbf',window:'#b9cad5',accent:'#496d88',trees:3},
+ {name:'GEORGETOWN',style:'federal',street:'historic',landmark:'canal',palette:['#9b3f32','#b8573e','#d0ad74','#726158','#8d332b'],trim:'#e3d0ae',window:'#d9c99a',accent:'#315d4c',trees:3},
+ {name:'DUPONT CIRCLE',style:'victorian',street:'circle',landmark:'fountain',palette:['#8b4b4f','#b07a65','#77637d','#9b6f4f'],trim:'#d9c8b6',window:'#d7c895',accent:'#47725d',trees:4},
+ {name:'SHAW',style:'mixedhistoric',street:'arts',landmark:'theater',palette:['#7c493f','#9a6451','#4f5662','#b37b58'],trim:'#d0bba6',window:'#d8c58e',accent:'#8a4768',trees:2},
+ {name:'U STREET',style:'storefront',street:'jazz',landmark:'jazz',palette:['#6f403b','#495265','#9e674b','#7f5b70'],trim:'#d0b79a',window:'#e0c675',accent:'#d0a84a',trees:2},
+ {name:'NOMA',style:'modernmix',street:'bike',landmark:'market',palette:['#5c6770','#a0523e','#647884','#87949b'],trim:'#b8c3c5',window:'#b8d3d8',accent:'#5ca66c',trees:2},
+ {name:'NAVY YARD',style:'modern',street:'riverbike',landmark:'ballpark',palette:['#556a73','#7b858a','#9b5e48','#485965'],trim:'#b9c7cc',window:'#a7cad8',accent:'#68a6b8',trees:2},
+ {name:'SOUTHWEST WATERFRONT',style:'waterfront',street:'waterfront',landmark:'marina',palette:['#607986','#7f8f95','#a06a50','#4f6673'],trim:'#c7d0d1',window:'#aad4df',accent:'#57a2b5',trees:2},
+ {name:'ADAMS MORGAN',style:'colorful',street:'nightlife',landmark:'mural',palette:['#88485b','#4f7192','#8b6845','#6c4d82','#9a5741'],trim:'#d7c1a6',window:'#dcc587',accent:'#cc6b3d',trees:3},
+ {name:'COLUMBIA HEIGHTS',style:'densehistoric',street:'dense',landmark:'tivoli',palette:['#7c4b40','#aa7354','#626b73','#8c6d5d'],trim:'#d2c1a9',window:'#d4c48c',accent:'#4f765e',trees:3},
+ {name:'LOGAN CIRCLE',style:'victorianmix',street:'circle',landmark:'statue',palette:['#8f4f46','#a97761','#595f68','#806071'],trim:'#d7c5ad',window:'#d8c88f',accent:'#466e57',trees:4},
+ {name:'CLEVELAND PARK',style:'leafy',street:'artdeco',landmark:'uptown',palette:['#8c745d','#9a5f4e','#6e7668','#b0a18d'],trim:'#d9cdb7',window:'#cfc99a',accent:'#58765b',trees:5},
+ {name:'MOUNT VERNON SQUARE',style:'civic',street:'convention',landmark:'carnegie',palette:['#62676e','#8a8073','#4f555e','#9a7357'],trim:'#cbc4b6',window:'#cfd0ba',accent:'#8b4f43',trees:2},
+ {name:'WOODLEY PARK',style:'apartmentleafy',street:'leafy',landmark:'bridge',palette:['#8b6553','#756f65','#9c8268','#5d6468'],trim:'#d5c8b4',window:'#d5c28d',accent:'#55745d',trees:5},
+ {name:'H STREET NE',style:'storefront',street:'streetcar',landmark:'atlas',palette:['#8f493f','#50647a','#b06c45','#724b69'],trim:'#d7bea1',window:'#dfc377',accent:'#b04545',trees:2},
+ {name:'PETWORTH',style:'porch',street:'residential',landmark:'mural',palette:['#8a5848','#a16f59','#6f725f','#8d684e'],trim:'#d5c3a8',window:'#d4c390',accent:'#4d7259',trees:5},
+ {name:'TENLEYTOWN',style:'campus',street:'institutional',landmark:'campus',palette:['#67717a','#9a8167','#59646d','#aa9880'],trim:'#d0c7b7',window:'#c3ced0',accent:'#4c6d83',trees:3},
+ {name:'BROOKLAND',style:'romanesque',street:'church',landmark:'basilica',palette:['#8c6a55','#a38067','#69685f','#9b5d48'],trim:'#d3c0a5',window:'#d7c78f',accent:'#536e55',trees:5}
+];
+const scandals=[
+ {id:'ukraine_impeachment',year:'2019',title:'UKRAINE CALL',boss:'DONALD TRUMP',bossKind:'trump',agent:'PLAZA HOTEL STAFF',headline:'“JUST TALKING”',desc:'The 2019 Ukraine pressure controversy led to Donald Trump’s first impeachment by the House.',bossLine:'Nobody understands the call, but everyone has a transcript.',color:'#7a3f3f',bits:['The transcript has been entered into evidence, then entered again for emphasis.','A perfect call has requested an imperfect amount of legal counsel.','The phone records have retained counsel.']},
+ {id:'aoc_metgala',year:'2021–25',title:'MET GALA ETHICS',boss:'ALEXANDRIA OCASIO-CORTEZ',bossKind:'aoc',agent:'GALA COMPLIANCE AIDE',headline:'“TAX THE RECEIPT”',desc:'A 2025 House Ethics Committee report found gift-rule violations connected to Alexandria Ocasio-Cortez’s 2021 Met Gala attendance, while stating the violations were not knowing and willful.',bossLine:'The dress has been referred to committee.',color:'#6b3d61',bits:['The invoice arrived fashionably late.','The ethics manual has been asked to respect the dress code.','The red carpet is now a document-production zone.']},
+ {id:'vance_cats',year:'2021–24',title:'CAT LADY CAUCUS',boss:'JD VANCE',bossKind:'vance',agent:'LOTION BOTTLE',headline:'“CHECK THE PET POLICY”',desc:'A 2021 remark by JD Vance about “childless cat ladies” became a major campaign controversy when it resurfaced during the 2024 election.',bossLine:'The cats have requested equal time.',color:'#555d78',bits:['The feline caucus has demanded a correction and three cans of tuna.','The podcast microphone is now under subpoena by the neighborhood cats.','Every demographic model has been knocked off the table.']},
+ {id:'netanyahu_trial',year:'2020–26',title:'THE TRIAL BINDERS',boss:'BENJAMIN NETANYAHU',bossKind:'netanyahu',agent:'LEGAL AIDE',headline:'“PLEASE SEE EXHIBIT B”',desc:'Benjamin Netanyahu’s long-running corruption trial has remained an active political and legal controversy in Israel.',bossLine:'The binder has a binder.',color:'#475f79',bits:['Exhibit A has requested a coalition agreement.','The legal team has opened another binder inside the first binder.','The press conference has been adjourned pending coffee.']},
+ {id:'putin_icc',year:'2023–26',title:'ICC WARRANT',boss:'VLADIMIR PUTIN',bossKind:'putin',agent:'KREMLIN AIDE',headline:'“WARRANT PENDING”',desc:'The International Criminal Court issued an arrest warrant for Vladimir Putin in 2023 over alleged war crimes involving the unlawful deportation and transfer of Ukrainian children.',bossLine:'The warrant has entered the very long table.',color:'#4b5666',bits:['The table has been extended another twelve feet for diplomatic reasons.','The warrant is waiting in reception with a visitor badge.','The Kremlin statement has denied the existence of the statement.']},
+ {id:'zelensky_oval',year:'2025',title:'OVAL OFFICE CLASH',boss:'VOLODYMYR ZELENSKYY',bossKind:'zelensky',agent:'AZOV BRIGADE FIGHTER',headline:'“MEETING ADJOURNED”',desc:'A tense February 2025 Oval Office meeting involving Volodymyr Zelenskyy, Donald Trump and JD Vance became a major international political controversy; Zelenskyy later called the confrontation regrettable.',bossLine:'The bilateral meeting has become trilateral television.',color:'#4f6647',bits:['The mineral agreement has asked everyone to lower their voice.','Diplomacy has been moved from the conference room to the comment section.','The briefing notes now require protective equipment.']},
+ {id:'greta_flotilla',year:'2025',title:'FLOTILLA PROTEST',boss:'GRETA THUNBERG',bossKind:'greta',agent:'PROTEST MARSHAL',headline:'“NO IDLING”',desc:'Climate activist Greta Thunberg joined a 2025 aid flotilla bound for Gaza, extending her activism into another highly contested international political issue.',bossLine:'The protest sign has a smaller carbon footprint than this hearing.',color:'#3f7358',bits:['The megaphone has requested renewable batteries.','The motorcade has been ticketed for unnecessary idling.','The protest permit was printed on recycled paperwork about paperwork.']},
+ {id:'biden_docs',year:'2023–24',title:'CLASSIFIED GARAGE',boss:'JOE BIDEN',bossKind:'biden',agent:'HUNTER PARTY FRIEND',headline:'“VERY SECURE”',desc:'A special-counsel investigation examined Joe Biden’s handling of classified material; the report ultimately declined prosecution.',bossLine:'The documents were stored safely. The garage was not amused.',color:'#496b61',bits:['The Corvette has declined to answer questions.','Every box now has its own parking space.','The garage door opener has been placed in a secure compartment.']},
+ {id:'partygate',year:'2021–23',title:'PARTYGATE',boss:'BORIS JOHNSON',bossKind:'johnson',agent:'BOTTLE GIRL',headline:'“WORK EVENT”',desc:'Boris Johnson became the central political figure in the Partygate controversy over gatherings during COVID restrictions.',bossLine:'Please remain six feet away from the champagne.',color:'#7a5940',bits:['The cake has been designated essential government business.','The playlist has been classified as a work document.','This meeting has seventeen candles and no minutes.']},
+ {id:'santos',year:'2022–24',title:'GEORGE SANTOS',boss:'GEORGE SANTOS',bossKind:'santos',agent:'BIOGRAPHICAL AIDE',headline:'“TRUST ME”',desc:'George Santos faced extensive scrutiny over false biographical claims, campaign finances and ethics issues before his expulsion from Congress.',bossLine:'Every résumé line requires its own oversight subcommittee.',color:'#4c5b7a',bits:['The résumé has developed three new résumés.','Human Resources has requested proof that Human Resources exists.','The biography is currently being fact-checked by the biography.']},
+ {id:'menendez',year:'2023–25',title:'GOLD BARS',boss:'BOB MENENDEZ',bossKind:'menendez',agent:'ENVELOPE AIDE',headline:'“FOLLOW THE ENVELOPE”',desc:'Bob Menendez was convicted in a federal bribery case involving cash, gold bars and other benefits.',bossLine:'The evidence is heavy. Literally.',color:'#80612c',bits:['The evidence locker has requested a forklift.','The envelope now has a commodity price ticker.','The gold bar has invoked its right to remain extremely shiny.']},
+ {id:'adams_case',year:'2024–25',title:'TURKEY & CAMPAIGN CASH',boss:'ERIC ADAMS',bossKind:'adams',agent:'CITY HALL AIDE',headline:'“UPGRADE REQUEST”',desc:'Federal prosecutors charged Eric Adams in 2024 with bribery and campaign-finance offenses involving alleged benefits from Turkish interests; he pleaded not guilty, and the case was dismissed with prejudice in 2025.',bossLine:'The itinerary has more footnotes than destinations.',color:'#3e6674',bits:['The boarding pass has been referred to outside counsel.','City Hall has issued a statement about the statement about the upgrade.','The travel desk is now accepting campaign-finance disclosures as carry-on luggage.']},
+ {id:'truss_lettuce',year:'2022',title:'LETTUCE VS. TRUSS',boss:'LIZ TRUSS',bossKind:'truss',agent:'LETTUCE MONSTER',headline:'“STILL FRESH”',desc:'Liz Truss’s brief premiership became inseparable from a viral tabloid stunt comparing the length of her tenure with the shelf life of a lettuce.',bossLine:'The lettuce has a longer term limit.',color:'#4b7048',bits:['The produce aisle is demanding a vote of confidence.','The lettuce has retained a press secretary.','Markets opened lower; salad opened crisp.']},
+ {id:'boebert',year:'2023',title:'BEETLEJUICE',boss:'LAUREN BOEBERT',bossKind:'boebert',agent:'THEATER AIDE',headline:'“NO VAPING”',desc:'Lauren Boebert was removed from a Denver performance of Beetlejuice after complaints about disruptive behavior.',bossLine:'Please stop vaping during sworn testimony.',color:'#5c3d66',bits:['The usher has entered a motion to restore order.','The balcony has requested congressional immunity.','Intermission has lasted three committee hearings.']},
+ {id:'khomeini_archive',year:'2026',title:'STRAIT OF HORMUZ',boss:'AYATOLLAH MOJTABA KHAMENEI',bossKind:'khamenei',agent:'IRGC NAVY GUARD',headline:'“STRAIT CLOSED-ish”',desc:'The 2026 U.S.–Iran conflict and the fight over shipping through the Strait of Hormuz turned the waterway into a central global energy and security crisis.',bossLine:'Every tanker now needs a permission slip.',color:'#574d42',bits:['The shipping lane has been moved to committee.','The oil market has requested seasickness medication.','The strait is open, closed, supervised, disputed, and somehow still in the meeting agenda.']},
+ {id:'cruz_cancun',year:'2021',title:'CANCÚN CHECK-IN',boss:'TED CRUZ',bossKind:'cruz',agent:'TRAVEL AIDE',headline:'“RETURN FLIGHT PENDING”',desc:'Ted Cruz faced bipartisan criticism after traveling to Cancún with his family while Texas was in a deadly winter-storm emergency; he returned early and called the trip a mistake.',bossLine:'The thermostat has requested an international connection.',color:'#4d6577',bits:['The carry-on has been upgraded to emergency management.','The airport lounge has issued a winter-weather advisory.','The return ticket has been moved to the front of the briefing binder.']},
+ {id:'giuliani_landscaping',year:'2020',title:'TOTAL LANDSCAPING',boss:'RUDY GIULIANI',bossKind:'giuliani',agent:'LANDSCAPER',headline:'“LAWN & ORDER”',desc:'Rudy Giuliani held a November 2020 Trump-campaign press conference at Four Seasons Total Landscaping in Philadelphia while discussing election-related legal challenges.',bossLine:'The podium has been moved next to the mulch.',color:'#59694d',bits:['The press pool has been asked to stay off the hydrangeas.','The legal strategy now includes seasonal lawn care.','Counsel will take questions after the leaf blower stops.']},
+ {id:'noem_memoir',year:'2024',title:'THE MEMOIR CHAPTER',boss:'KRISTI NOEM',bossKind:'noem',agent:'BOOK TOUR AIDE',headline:'“ADVANCE COPY WITHHELD”',desc:'Kristi Noem drew widespread criticism in 2024 after writing in her memoir about killing a young hunting dog she described as aggressive and untrainable.',bossLine:'The advance copy has become the opposition research.',color:'#6a5748',bits:['The book tour has requested a veterinarian and a publicist.','Chapter three has been referred to crisis communications.','The memoir has acquired its own emergency press office.']},
+ {id:'gaetz_ethics',year:'2024',title:'HOUSE ETHICS REPORT',boss:'MATT GAETZ',bossKind:'gaetz',agent:'REDACTED INTERN',headline:'“COMMITTEE REPORT”',desc:'A December 2024 House Ethics Committee report said it found substantial evidence that former Representative Matt Gaetz violated House rules and other standards; Gaetz denied wrongdoing.',bossLine:'The committee has requested the receipts again.',color:'#465d75',bits:['The ethics binder has achieved sentience.','The committee would like the committee to answer the committee.','The receipt printer has retained counsel.']},
+ {id:'rfk_bear',year:'2014 / 2024',title:'CENTRAL PARK BEAR',boss:'ROBERT F. KENNEDY JR.',bossKind:'rfk',agent:'WILDLIFE AIDE',headline:'“BICYCLE EVIDENCE”',desc:'During his 2024 presidential campaign, Robert F. Kennedy Jr. said he had placed a road-killed bear cub in New York’s Central Park with a bicycle in 2014, resolving a long-running mystery.',bossLine:'The wildlife desk has requested one bicycle and no follow-up questions.',color:'#52664a',bits:['The bike rack has retained wildlife counsel.','Central Park has opened a file labeled PLEASE EXPLAIN.','The roadkill story has somehow developed a transportation subplot.']}
+];
+
+
+const caseIntros={
+ ukraine_impeachment:`<b>WHAT HAPPENED:</b> In 2019, a whistleblower complaint focused attention on President Donald Trump’s July 25 call with Ukrainian President Volodymyr Zelenskyy and the surrounding U.S. policy toward Ukraine. House investigators concluded Trump sought public announcements of investigations involving Joe Biden and a 2016-election theory while a White House meeting and military aid were being withheld. The House impeached Trump in December 2019 for abuse of power and obstruction of Congress; the Senate acquitted him in February 2020.`,
+ aoc_metgala:`<b>WHAT HAPPENED:</b> Alexandria Ocasio-Cortez attended the 2021 Met Gala wearing a “Tax the Rich” dress. A House Ethics investigation later examined admission provided to her partner, clothing and services connected with the appearance, and delayed or incomplete payments. In 2025, the committee found gift-rule violations while also finding the violations were not knowing and willful.`,
+ vance_cats:`<b>WHAT HAPPENED:</b> In a 2021 interview, JD Vance used the phrase “childless cat ladies” while criticizing several Democratic leaders and what he described as an anti-family political culture. The remark resurfaced after he joined the 2024 Republican presidential ticket. Critics said it demeaned adults without children; Vance said the line was sarcastic and that his broader point concerned family policy.`,
+ netanyahu_trial:`<b>WHAT HAPPENED:</b> Benjamin Netanyahu was indicted in 2019 in three corruption cases involving allegations of expensive gifts from wealthy associates, efforts to obtain favorable media coverage, and regulatory favors. His trial began in 2020 on charges including bribery, fraud and breach of trust. Netanyahu denies wrongdoing.`,
+ putin_icc:`<b>WHAT HAPPENED:</b> In March 2023, the International Criminal Court issued an arrest warrant for Vladimir Putin. The court said there were reasonable grounds to believe he bore criminal responsibility for the alleged war crimes of unlawful deportation and unlawful transfer of Ukrainian children from occupied territory to Russia. The warrant has not resulted in an ICC trial or conviction.`,
+ zelensky_oval:`<b>WHAT HAPPENED:</b> On February 28, 2025, a White House meeting between Volodymyr Zelenskyy, Donald Trump and JD Vance turned into a heated public argument over the war, diplomacy, U.S. support and gratitude. Cameras captured the confrontation, the remainder of Zelenskyy’s visit was cut short, and a planned minerals agreement was not signed that day.`,
+ greta_flotilla:`<b>WHAT HAPPENED:</b> In 2025, Greta Thunberg joined the Global Sumud Flotilla, a multinational activist effort attempting to deliver humanitarian supplies to Gaza and challenge Israel’s maritime blockade. The mission drew international attention and was intercepted by Israeli naval forces before reaching Gaza. Supporters described it as humanitarian protest; Israel defended the blockade on security grounds.`,
+ biden_docs:`<b>WHAT HAPPENED:</b> Classified documents from Joe Biden’s time as vice president and senator were found at locations including the Penn Biden Center and his Delaware home. Special Counsel Robert Hur investigated Biden’s retention and handling of the material. Hur’s 2024 report concluded criminal charges were not warranted.`,
+ partygate:`<b>WHAT HAPPENED:</b> During periods when Britain imposed COVID-19 restrictions on gatherings, multiple events took place in and around 10 Downing Street and other government offices. Boris Johnson attended some gatherings and was fined by police in 2022. A House of Commons committee later concluded he had deliberately misled Parliament; Johnson rejected aspects of that conclusion.`,
+ santos:`<b>WHAT HAPPENED:</b> George Santos entered Congress after reports exposed extensive false or misleading claims about his education, employment, finances and personal biography. Federal investigations also focused on campaign finance, donor money and identity theft. The House expelled Santos in December 2023, and he pleaded guilty in 2024 to wire fraud and aggravated identity theft.`,
+ menendez:`<b>WHAT HAPPENED:</b> Federal prosecutors accused Senator Bob Menendez and others of a bribery scheme involving cash, gold bars, a luxury car and other benefits in exchange for official acts benefiting business associates and foreign interests. A federal jury convicted Menendez in July 2024; he was later sentenced to 11 years in prison.`,
+ adams_case:`<b>WHAT HAPPENED:</b> A 2024 federal indictment accused Eric Adams of accepting illegal campaign contributions and luxury travel benefits connected to Turkish officials and businesspeople, and of pressuring New York City officials over the opening of a Turkish diplomatic building. Adams pleaded not guilty and denied wrongdoing. In April 2025, a federal judge dismissed the case with prejudice after the Justice Department sought dismissal.`,
+ truss_lettuce:`<b>WHAT HAPPENED:</b> Liz Truss became British prime minister in September 2022. Her government’s “mini-budget,” featuring large unfunded tax cuts, triggered severe market turmoil and forced major policy reversals. A British tabloid livestreamed a head of lettuce to ask whether it would outlast her premiership. Truss resigned after 49 days.`,
+ boebert:`<b>WHAT HAPPENED:</b> In September 2023, U.S. Representative Lauren Boebert and a companion were escorted out of a Denver performance of <i>Beetlejuice</i> after complaints about disruptive behavior. Reports and venue records described complaints involving phone use, singing and vaping. Boebert later apologized.`,
+ khomeini_archive:`<b>WHAT HAPPENED:</b> In 2026, the U.S.–Iran conflict made the Strait of Hormuz a central military, diplomatic and energy flashpoint. Iran asserted control over transit and tied reopening the waterway to broader negotiations, while the United States said commercial shipping should move freely. Supreme Leader Ayatollah Mojtaba Khamenei leads Iran after the death of his father, Ali Khamenei, earlier in 2026.`,
+ cruz_cancun:`<b>WHAT HAPPENED:</b> During the catastrophic February 2021 Texas winter storm, millions lost electricity or heat and the state’s power system came under intense scrutiny. Senator Ted Cruz flew with his family to Cancún while the emergency was still unfolding, then returned to Texas the next day. Cruz said he had accompanied his daughters and called the trip a mistake.`,
+ giuliani_landscaping:`<b>WHAT HAPPENED:</b> On November 7, 2020, Rudy Giuliani and other Trump allies held a press conference at Four Seasons Total Landscaping in Philadelphia while challenging the presidential election result. The venue was a landscaping business rather than the Four Seasons hotel chain, and the setting immediately became an internet meme.`,
+ noem_memoir:`<b>WHAT HAPPENED:</b> In her 2024 memoir, Kristi Noem described killing Cricket, a 14-month-old hunting dog, after saying the dog had ruined a hunt, killed chickens and behaved aggressively. The account triggered bipartisan criticism. Noem defended the episode as a difficult farm decision.`,
+ gaetz_ethics:`<b>WHAT HAPPENED:</b> In December 2024, the House Ethics Committee released a report saying it found substantial evidence that former Representative Matt Gaetz engaged in sexual activity with a 17-year-old girl in 2017, as well as other misconduct involving paid sex, drug use and gifts. Gaetz denied wrongdoing. The Justice Department had previously ended a related criminal investigation without charging him.`,
+ rfk_bear:`<b>WHAT HAPPENED:</b> In 2024, Robert F. Kennedy Jr. said that a decade earlier he had picked up a bear cub killed by a vehicle, later placed the carcass in Central Park, and added an old bicycle to make the scene look like a bike collision. Separately, a 2012 deposition later reported in 2024 described a doctor’s belief that a parasite had entered his brain and died there; Kennedy said he recovered.`
+}
+for(const sc of scandals)sc.intro=caseIntros[sc.id]||sc.desc;
+Object.assign(scandals.find(s=>s.id==='adams_case'),{agent:'TURKISH HENCHMAN'});
+Object.assign(scandals.find(s=>s.id==='noem_memoir'),{agent:'ZOMBIE DOG'});
+Object.assign(scandals.find(s=>s.id==='netanyahu_trial'),{agent:'MOSSAD AGENT'});
+Object.assign(scandals.find(s=>s.id==='greta_flotilla'),{agent:'FREE PALESTINE PROTESTOR'});
+Object.assign(scandals.find(s=>s.id==='putin_icc'),{agent:'KGB AGENT'});
+Object.assign(scandals.find(s=>s.id==='cruz_cancun'),{agent:'ZODIAC KILLER CLONE'});
+Object.assign(scandals.find(s=>s.id==='rfk_bear'),{agent:'BRAIN-EATING WORM'});
+Object.assign(scandals.find(s=>s.id==='ukraine_impeachment'),{agent:'PLAZA HOTEL STAFF'});
+Object.assign(scandals.find(s=>s.id==='vance_cats'),{agent:'LOTION BOTTLE'});
+Object.assign(scandals.find(s=>s.id==='zelensky_oval'),{agent:'AZOV BRIGADE FIGHTER'});
+Object.assign(scandals.find(s=>s.id==='biden_docs'),{agent:'HUNTER PARTY FRIEND'});
+Object.assign(scandals.find(s=>s.id==='partygate'),{agent:'BOTTLE GIRL'});
+Object.assign(scandals.find(s=>s.id==='santos'),{agent:'BIOGRAPHICAL AIDE'});
+Object.assign(scandals.find(s=>s.id==='truss_lettuce'),{agent:'LETTUCE MONSTER'});
+Object.assign(scandals.find(s=>s.id==='giuliani_landscaping'),{agent:'LANDSCAPER'});
+const caseBrief=sc=>sc.intro||sc.desc;
+
+const bossStyles={
+ ukraine_impeachment:'phoneFan',aoc_metgala:'galaBurst',vance_cats:'pounce',netanyahu_trial:'binderBurst',putin_icc:'tableCharge',zelensky_oval:'micVolley',greta_flotilla:'climateGust',biden_docs:'boxDrop',partygate:'cakeArc',santos:'resumeSummon',menendez:'goldToss',adams_case:'boardingPass',truss_lettuce:'lettuceBounce',boebert:'vapeCloud',khomeini_archive:'hormuzBarrage',cruz_cancun:'suitcaseRush',giuliani_landscaping:'rakeLine',noem_memoir:'memoirStorm',gaetz_ethics:'ethicsBurst',rfk_bear:'bikeRoll'
+};
+scandals.forEach(sc=>sc.bossStyle=bossStyles[sc.id]||'phoneFan');
+
+// Each boss gets a rotating set of original absurdist one-liners.
+scandals.forEach((sc,i)=>{sc.bits=sc.bits||(bossBits[i]||bossBits[0])[1];});
+
+// Every case occupies a long, distinct Washington neighborhood.
+const locations=scandals.map((sc,i)=>{const base=levelBase(i);const x=(base+4)*TILE;return {id:sc.id,name:neighborhoods[i].name+' — '+sc.title,x,y:surfaceYAt(x)-30,chapter:i,desc:sc.desc}});
+const NPCS=[];
+// Paper notices drift well above the walking surface and never participate in collision.
+for(let i=0;i<scandals.length;i++){
+ const sc=scandals[i],base=levelBase(i);
+ const flyerSets=[
+  ['PHONE CALL APPRAISALS','RATED: PERFECT / BEAUTIFUL / SUBPOENA-ADJACENT','TRANSCRIPTS LAMINATED WHILE YOU WAIT'],
+  ['GALA COMPLIANCE DESK','FORMALWEAR MUST BE RETURNED WITH FORM 1040-TUX','RED CARPET NOW ACCEPTS ITEMIZED DEDUCTIONS'],
+  ['CAT LADY OUTREACH','ONE HOUSEHOLD / NINE LIVES / ZERO FOCUS GROUPS','PLEASE KEEP PODCASTS AWAY FROM THE LITTER BOX'],
+  ['TRIAL BINDER RENTAL','EXHIBIT A THROUGH EXHIBIT ZZZ','COALITION MEMBERS RECEIVE FREE TABS'],
+  ['LONG TABLE FURNITURE','DIPLOMATIC DISTANCE SOLD BY THE METER','ICC VISITORS PLEASE TAKE A NUMBER'],
+  ['OVAL OFFICE MEDIATION','MINERALS AGREEMENT WAITING ROOM','PLEASE KEEP ALL SHOUTING INSIDE THE BRIEFING'],
+  ['PROTEST SUPPLY CO.','MEGAPHONES CHARGED BY SOLAR PANEL','NO IDLING IN THE MOTORCADE LANE'],
+  ['GARAGE STORAGE SPECIAL','CORVETTE: LEFT BAY / RECORDS: ASK COUNSEL','FREE BOX LABEL WITH EVERY SUBPOENA'],
+  ['MANDATORY WORK EVENT','BRING YOUR OWN CAKE','DO NOT TYPE THE WORD PARTY IN THE CALENDAR'],
+  ['RÉSUMÉ ENHANCEMENT DESK','ADD 10 YEARS EXPERIENCE','REMOVE 14 FOLLOW-UP QUESTIONS'],
+  ['GOLD BAR VALIDATION','TWO ENVELOPES = ONE HOUR PARKING','NO RECEIPT? WE HAVE SEVERAL'],
+  ['MUNICIPAL TRAVEL DESK','UPGRADES SUBJECT TO FEDERAL REVIEW','PLEASE DECLARE ALL BAGGAGE AND DONORS'],
+  ['LETTUCE SECURITY DETAIL','PRODUCE REQUESTS A LONGER TERM','MARKETS DOWN / SALAD CRISP'],
+  ['THEATER ETIQUETTE','NO VAPING / NO LIVE COMMENTARY','OVERSIGHT BEGINS AFTER INTERMISSION'],
+  ['REVOLUTIONARY ARCHIVE','RETURN ALL MATERIALS BEFORE 1989','LATE FEES CALCULATED IN HISTORICAL FOOTNOTES'],
+  ['EMERGENCY TRAVEL DESK','WINTER COATS CHECKED AT GATE','RETURN FLIGHTS SUBJECT TO PUBLIC OPINION'],
+  ['LANDSCAPING LEGAL CENTER','MULCH / MICS / MOTIONS','PRESS PARKING BEHIND THE FERTILIZER'],
+  ['MEMOIR CRISIS OFFICE','ADVANCE COPIES REQUIRE COUNSEL','BOOK TOUR MAY CONTAIN DIFFICULT CHAPTERS'],
+  ['CAMPAIGN SCHEDULING','COMMERCIAL BREAK BEFORE CEREMONY ENDS','MOTORCADE DEPARTS PROMPTLY'],
+  ['WILDLIFE LOST & FOUND','BICYCLES TAGGED SEPARATELY','CENTRAL PARK REQUESTS EXPLANATION']
+ ];
+ const fs=flyerSets[i]||['PUBLIC AFFAIRS DESK','PLEASE CONSULT COUNSEL','NO COMMENT AT THIS TIME'];
+ for(const off of [10,31,49]){
+   const x=(base+off)*TILE,y=surfaceYAt(x)-250-(off%3)*16;
+   flyers.push({level:i,x,y,w:off===31?202:186,h:off===31?92:82,head:off===31?sc.headline:'OFFICIAL NOTICE: NO COMMENT',lines:[sc.title,fs[0],fs[1],fs[2]],stamp:sc.year+' • '+neighborhoods[i].name,phase:rand()*6.28,drift:14+rand()*10});
+ }
+}
+
+// Visual-only Washington streetscape. Geometry stays non-colliding; the profiles below
+// reproduce the present-day architectural character of each neighborhood without turning
+// the background into platform collision.
+const buildings=[],wallDecals=[],flags=[];
+const cityRand=mulberry32(0xDCE2026);
+const decalWords=['SUBPOENA ENTRANCE','NO COMMENT','PENDING REVIEW','HEARING ROOM','PRESS POOL','ETHICS OFFICE','ASK COUNSEL','LOBBYISTS USE SIDE DOOR','TEMPORARY PERMANENT COMMITTEE','PUBLIC AFFAIRS OFFICE'];
+const styleRules={
+ capitol:{count:9,minW:3,maxW:5,minH:5,maxH:8},downtown:{count:7,minW:5,maxW:8,minH:8,maxH:14},institutional:{count:7,minW:5,maxW:8,minH:7,maxH:12},
+ federal:{count:10,minW:3,maxW:4,minH:5,maxH:7},victorian:{count:9,minW:3,maxW:5,minH:6,maxH:9},mixedhistoric:{count:8,minW:4,maxW:7,minH:6,maxH:11},
+ storefront:{count:9,minW:3,maxW:5,minH:4,maxH:8},modernmix:{count:7,minW:5,maxW:8,minH:8,maxH:14},modern:{count:7,minW:5,maxW:8,minH:9,maxH:15},
+ waterfront:{count:7,minW:5,maxW:9,minH:8,maxH:14},colorful:{count:9,minW:3,maxW:5,minH:5,maxH:8},densehistoric:{count:8,minW:4,maxW:7,minH:7,maxH:12},
+ victorianmix:{count:8,minW:4,maxW:6,minH:6,maxH:11},leafy:{count:8,minW:4,maxW:6,minH:5,maxH:9},civic:{count:7,minW:5,maxW:9,minH:8,maxH:15},
+ apartmentleafy:{count:8,minW:4,maxW:7,minH:6,maxH:11},porch:{count:9,minW:3,maxW:5,minH:4,maxH:7},campus:{count:7,minW:5,maxW:8,minH:6,maxH:11},romanesque:{count:8,minW:4,maxW:7,minH:5,maxH:10}
+};
+for(let level=0;level<LEVEL_COUNT;level++){
+ const base=levelBase(level),hood=neighborhoods[level],rule=styleRules[hood.style]||styleRules.mixedhistoric;
+ const usable=LEVEL_SPAN-7,step=usable/rule.count;
+ for(let b=0;b<rule.count;b++){
+  const bx=(base+1.2+b*step+cityRand()*1.5)*TILE;
+  const wt=rule.minW+Math.floor(cityRand()*(rule.maxW-rule.minW+1));
+  const ht=rule.minH+Math.floor(cityRand()*(rule.maxH-rule.minH+1));
+  const bw=wt*TILE,bh=ht*TILE,by=25*TILE-bh;
+  let variant=hood.style;
+  if(hood.style==='mixedhistoric'&&b%3===2)variant='modernmix';
+  if(hood.style==='densehistoric'&&b%4===3)variant='downtown';
+  if(hood.style==='victorianmix'&&b%3===1)variant='downtown';
+  if(hood.style==='modernmix'&&b%3===0)variant='warehouse';
+  if(hood.style==='campus'&&b%3===0)variant='institutional';
+  if(hood.style==='romanesque'&&b===Math.floor(rule.count*.55))variant='church';
+  const facade=hood.palette[b%hood.palette.length];
+  buildings.push({x:bx,y:by,w:bw,h:bh,level,seed:cityRand(),facade,trim:hood.trim,window:hood.window,variant,index:b});
+  if(b%3===1)wallDecals.push({x:bx+bw-76,y:by+Math.max(52,Math.min(bh-90,70+Math.floor(cityRand()*Math.max(1,bh-150)))),text:decalWords[Math.floor(cityRand()*decalWords.length)],level,rot:(cityRand()-.5)*.025});
+ }
+ const levelBuildings=buildings.filter(v=>v.level===level).sort((a,b)=>b.h-a.h);
+ // Flags are now rooftop/upper-façade fixtures only. Nothing hangs near the street-level play lane.
+ levelBuildings.slice(0,2).forEach((host,idx)=>{
+   const side=idx===0?1:-1,anchorX=side>0?host.x+host.w-32:host.x+32,anchorY=host.y+20;
+   if(surfaceYAt(anchorX)-anchorY>250)flags.push({x:anchorX,y:anchorY,w:86,h:44,phase:cityRand()*6.28,kind:idx===0?'dc':'us',side,level});
+ });
+}
+const enemies=[];const shots=[];const enemyShots=[];const particles=[];const receipts=[];const potions=[];const completedLocations=new Set();
+const MAX_REINFORCEMENT_WAVES=6;
+const reinforcement=Array.from({length:LEVEL_COUNT},()=>({kills:0,wave:0}));
+const CHAR_SCALE=1.2544;
+let score=0,chapter=0,paused=true,started=false,gameOver=false,won=false,cutsceneLock=false,camX=0,camY=0,last=performance.now(),fireCooldown=0,autosaveClock=0;
+const player={x:(levelBase(0)+2)*TILE,y:surfaceYAt((levelBase(0)+2)*TILE)-53,w:33,h:53,vx:0,vy:0,onGround:false,hp:100,rep:50,face:1,inv:0,ammo:20,coyote:0,jumpBuffer:0};
+
+const SAVE_KEY='war_worlds_dc_save_v3';
+function toast(msg){const el=document.getElementById('toast');if(!el)return;el.textContent=msg;el.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(()=>el.classList.remove('show'),1500)}
+function setSaveCookie(value){try{document.cookie=SAVE_KEY+'='+encodeURIComponent(value)+'; max-age='+(60*60*24*180)+'; path=/; SameSite=Lax'}catch(e){}}
+function readSaveCookie(){try{const parts=document.cookie.split(';').map(v=>v.trim());const row=parts.find(v=>v.startsWith(SAVE_KEY+'='));return row?decodeURIComponent(row.slice(SAVE_KEY.length+1)):null}catch(e){return null}}
+function clearSavedGame(){try{document.cookie=SAVE_KEY+'=; max-age=0; path=/; SameSite=Lax'}catch(e){}try{localStorage.removeItem(SAVE_KEY)}catch(e){}}
+function getSavedGame(){let raw=readSaveCookie();if(!raw)try{raw=localStorage.getItem(SAVE_KEY)}catch(e){}if(!raw)return null;try{const st=JSON.parse(raw);if(!st||st.v!==3||!Number.isInteger(st.chapter)||st.chapter<0||st.chapter>=LEVEL_COUNT)return null;return st}catch(e){return null}}
+function saveGame(silent=false){if(!started||gameOver||won)return;const st={v:3,chapter,score,hp:Math.round(player.hp),rep:Math.round(player.rep*10)/10,ammo:player.ammo,completed:[...completedLocations],waves:reinforcement.map(r=>[r.kills,r.wave]),ts:Date.now()};const raw=JSON.stringify(st);setSaveCookie(raw);try{localStorage.setItem(SAVE_KEY,raw)}catch(e){}if(!silent)toast('CASE FILE SAVED')}
+function applySavedGame(st){chapter=clamp(st.chapter|0,0,LEVEL_COUNT-1);score=Math.max(0,st.score|0);player.hp=clamp(Number(st.hp)||100,1,100);player.rep=clamp(Number(st.rep)||50,0,100);player.ammo=Math.max(0,st.ammo|0);completedLocations.clear();for(const n of st.completed||[])if(Number.isInteger(n)&&n>=0&&n<LEVEL_COUNT)completedLocations.add(n);if(Array.isArray(st.waves))st.waves.forEach((v,i)=>{if(reinforcement[i]&&Array.isArray(v)){reinforcement[i].kills=Math.max(0,v[0]|0);reinforcement[i].wave=clamp(v[1]|0,0,MAX_REINFORCEMENT_WAVES)}});const b=levelBounds(chapter);player.x=b.min+80;player.y=surfaceYAt(player.x)-player.h;player.vx=0;player.vy=0;shots.length=0;enemyShots.length=0;camX=clamp(player.x-VIEW.w*.4,0,WORLD_PX-VIEW.w);camY=clamp(player.y-VIEW.h*.58,0,WORLD_H*TILE-VIEW.h)}
+function spawn(type,x,y,hp=type==='boss'?120:26,level=0){const isBoss=type==='boss';const size=isBoss?59:42;enemies.push({type,x,y,w:size,h:size,vx:0,vy:0,hp,maxHp:hp,cd:Math.floor(rand()*40),attackCd:isBoss?55+Math.floor(rand()*45):0,dashTimer:0,dashDir:0,phase:rand()*6.28,level})}
+function reinforcementThreshold(wave){return Math.max(1,Math.floor(4.2/(1+Math.pow(wave+1,.72))));}
+function spawnAgent(level,count){
+ const b=levelBounds(level),margin=70;
+ for(let j=0;j<count;j++){
+  let px=b.min+margin+rand()*Math.max(80,b.max-b.min-margin*2),tries=0;
+  do{px=b.min+margin+rand()*Math.max(80,b.max-b.min-margin*2);tries++}while(tries<16&&Math.abs(px-player.x)<210);
+  spawn('agent',px,surfaceYAt(px+21)-42,26,level);
+ }
+}
+function seedEnemies(){
+ enemies.length=0;
+ for(let i=0;i<LEVEL_COUNT;i++){
+  reinforcement[i].kills=0;reinforcement[i].wave=0;
+  spawnAgent(i,7);
+  const base=levelBase(i),bossX=(base+LEVEL_SPAN-8)*TILE;
+  spawn('boss',bossX,surfaceYAt(bossX+29.5)-59,150+Math.min(90,i*4),i);
+ }
+}
+function maybeReinforce(){
+ const rs=reinforcement[chapter];
+ if(!rs||!chapterBossAlive()||rs.wave>=MAX_REINFORCEMENT_WAVES)return;
+ const alive=enemies.filter(e=>e.level===chapter&&e.type==='agent'&&e.hp>0).length;
+ const threshold=reinforcementThreshold(rs.wave);
+ if(alive<=threshold){
+  rs.wave++;
+  const batch=Math.min(5+Math.floor(Math.sqrt(rs.wave)*2),10);
+  spawnAgent(chapter,batch);
+  burst(player.x,player.y,10,'#d7b27b');
+ }
+}
+function seedReceipts(){
+ receipts.length=0;
+ for(let i=0;i<LEVEL_COUNT;i++){
+  const base=levelBase(i);
+  for(const off of [5,14,24,35,46,55]){
+    const x=(base+off)*TILE;
+    receipts.push({x,y:surfaceYAt(x)-66,r:9,level:i,taken:false,dropped:false,vx:0,vy:0});
+  }
+ }
+}
+function dropReceiptFromAgent(e){
+ receipts.push({x:e.x+e.w/2,y:e.y+e.h/2,r:9,level:e.level,taken:false,dropped:true,vx:(rand()-.5)*3.2,vy:-5.6,spin:rand()*6.28});
+}
+function maybeDropHealthPotion(e){
+ const missing=1-clamp(player.hp/100,0,1);
+ const chance=clamp((e.type==='boss'?.48:.09)+missing*.30,.09,.62);
+ if(rand()>chance)return;
+ potions.push({x:e.x+e.w/2,y:e.y+e.h/2,level:e.level,taken:false,vx:(rand()-.5)*2.8,vy:-5.1,spin:rand()*6.28,heal:25});
+}
+function updatePotions(frameScale){
+ for(const p of potions){
+  if(p.taken||p.level!==chapter)continue;
+  p.vy=Math.min(10,(p.vy||0)+.42*frameScale);p.x+=(p.vx||0)*frameScale;p.y+=p.vy*frameScale;p.vx*=Math.pow(.965,frameScale);p.spin=(p.spin||0)+.09*frameScale;
+  const floor=surfaceYAt(p.x)-12;if(p.y>=floor){p.y=floor;p.vy=0;p.vx*=.7}
+  const b=levelBounds(p.level);p.x=clamp(p.x,b.min+14,b.max-14);
+ }
+}
+function collectPotions(){
+ for(const p of potions){if(p.taken||p.level!==chapter)continue;const d=Math.hypot(player.x+player.w/2-p.x,player.y+player.h/2-p.y);if(d<38){p.taken=true;const before=player.hp;player.hp=clamp(player.hp+p.heal,0,100);score+=15;burst(p.x,p.y,10,'#78d889');if(player.hp>before)player.rep=clamp(player.rep+.5,0,100)}}
+}
+function updateDroppedReceipts(frameScale){
+ for(const r of receipts){
+  if(r.taken||!r.dropped||r.level!==chapter)continue;
+  r.vy=Math.min(10,(r.vy||0)+.42*frameScale);r.x+=(r.vx||0)*frameScale;r.y+=r.vy*frameScale;r.vx*=Math.pow(.965,frameScale);r.spin=(r.spin||0)+.13*frameScale;
+  const floor=surfaceYAt(r.x)-10;if(r.y>=floor){r.y=floor;r.vy=0;r.vx*=.72}
+  const b=levelBounds(r.level);r.x=clamp(r.x,b.min+14,b.max-14);
+ }
+}
+seedEnemies();seedReceipts();
+function showPanel(title,html,buttons){paused=true;const panel=document.getElementById('panel'),card=document.getElementById('card');panel.style.display='flex';card.innerHTML='<h1>'+title+'</h1><div>'+html+'</div><div class="actions">'+buttons.map((b,i)=>'<button type="button" data-i="'+i+'">'+b[0]+'</button>').join('')+'</div>';card.querySelectorAll('button').forEach((b,i)=>b.addEventListener('click',buttons[i][1],{once:true}))}
+function closePanel(){document.getElementById('panel').style.display='none';paused=false;cutsceneLock=false}
+function togglePause(){if(!started||gameOver||won)return;if(document.getElementById('panel').style.display==='flex')return;paused=!paused;if(paused)showPanel('THE SENATE HAS CALLED A RECESS','C-SPAN is showing an empty lectern.<br><br>Washington considers this a full workday.<br><br><b>Checkpoint:</b> your current case can be saved here and resumed from the title screen.',[['SAVE CHECKPOINT',()=>{saveGame(false)}],['RETURN TO THE HEARING',closePanel]])}
+function cutscene(title,text,next){
+ cutsceneLock=true;const sc=scandals[chapter]||scandals[0];const bit=sc.bits?sc.bits[(Math.floor(score/50)+chapter)%sc.bits.length]:'';
+ showPanel(title,'<div class="scene">'+text+'<br><br><b>PRESS OFFICE STATEMENT:</b> '+bit+'</div>',[['CONTINUE',()=>{closePanel();if(next)next()}]])
+}
+function intro(){
+ const saved=getSavedGame();
+ const buttons=[];
+ if(saved)buttons.push(['RESUME CASE '+String(saved.chapter+1).padStart(2,'0'),()=>{started=true;applySavedGame(saved);closePanel();cutscene('RESUMED — '+scandals[chapter].title,'Checkpoint restored in '+neighborhoods[chapter].name+'.<br><br><b>POLITICIAN:</b> '+scandals[chapter].boss+'<br><br>'+caseBrief(scandals[chapter]),()=>{})}]);
+ buttons.push(['NEW INVESTIGATION',()=>{clearSavedGame();started=true;chapter=0;score=0;player.hp=100;player.rep=50;player.ammo=20;completedLocations.clear();seedEnemies();seedReceipts();const b=levelBounds(0);player.x=b.min+80;player.y=surfaceYAt(player.x)-player.h;closePanel();saveGame(true);cutscene('CASE FILE 01 — '+scandals[0].title,caseBrief(scandals[0])+'<br><br><b>Assignment:</b> cross '+neighborhoods[0].name+', collect receipts and confront '+scandals[0].boss+'.',()=>{})}]);
+ showPanel('WAR OF THE WORLDS','<div class="scene"><b>WASHINGTON, D.C., 2026.</b><br><br>The Constitution has vanished from the National Archives.<br><br>Twenty scandal districts have swallowed the capital, each stretched across a different Washington neighborhood. Every district has a politician at the center, an army of loyal aides, and enough paperwork to qualify as infrastructure.<br><br>Your assignment: recover the <b>RECEIPTS</b>, survive the spin rooms, and close every case file before the Final Press Briefing.</div><p><span class="key">A/D</span> move &nbsp; <span class="key">SPACE</span> jump &nbsp; <span class="key">STOMP</span> land on agents/bosses &nbsp; <span class="key">J</span> debate &nbsp; <span class="key">CLICK</span> throw receipt &nbsp; <span class="key">K</span> save checkpoint</p><p><b>GREEN MED BOTTLES</b> can drop from defeated enemies and restore 25 civility.</p><p class="muted">Progress checkpoints are stored in a browser cookie when available, with local browser storage as a fallback for local-file play. A saved checkpoint resumes at the start of the current case with your score, civility, confidence and receipts.</p>',buttons)
+}
+intro();
+function nearestNPC(){let best=null,bd=95;for(const n of NPCS){if(n.level!==chapter)continue;const d=Math.hypot(player.x-n.x,player.y-n.y);if(d<bd){bd=d;best=n}}return best}
+function interact(){
+ const n=nearestNPC();
+ if(n){const q=n.quotes[Math.floor(rand()*n.quotes.length)];const extra=agentQuips[Math.floor(rand()*agentQuips.length)];showPanel(n.name,q+'<br><br><b>NEARBY FEDERAL EMPLOYEE:</b> '+extra,[['BACK TO THE SIDEWALK',closePanel]]);return}
+ const l=locations[chapter];if(l&&Math.abs(player.x-l.x)<130){showPanel(scandals[chapter].title,caseBrief(scandals[chapter])+'<br><br><b>NEIGHBORHOOD:</b> '+neighborhoods[chapter].name+'<br><b>POLITICIAN:</b> '+scandals[chapter].boss+'<br><b>DETAIL:</b> '+scandals[chapter].agent,[['RETURN TO THE STREET',closePanel]])}
+}
+function collectReceipts(){
+ for(const r of receipts){if(r.taken||r.level!==chapter)continue;const d=Math.hypot(player.x+player.w/2-r.x,player.y+player.h/2-r.y);if(d<34){r.taken=true;player.ammo++;score+=25;burst(r.x,r.y,7,'#f1c04f')}}
+}
+function chapterBossAlive(){return enemies.some(e=>e.level===chapter&&e.type==='boss'&&e.hp>0)}
+function chapterAgentsAlive(){return enemies.filter(e=>e.level===chapter&&e.type==='agent'&&e.hp>0).length}
+function chapterHostilesAlive(){return enemies.some(e=>e.level===chapter&&(e.type==='boss'||e.type==='agent')&&e.hp>0)}
+function advanceIfCleared(){
+ if(paused||completedLocations.has(chapter)||chapter>=LEVEL_COUNT)return;
+ if(!chapterHostilesAlive()){
+  completedLocations.add(chapter);score+=250;player.rep=clamp(player.rep+6,0,100);
+  if(chapter===LEVEL_COUNT-1){finish();return}
+  chapter++;saveGame(true);
+  const sc=scandals[chapter];
+  cutscene('CASE FILE '+String(chapter+1).padStart(2,'0')+' — '+sc.title,caseBrief(sc)+'<br><br><b>NEIGHBORHOOD:</b> '+neighborhoods[chapter].name+'<br><b>POLITICIAN:</b> '+sc.boss+'<br><b>DETAIL:</b> '+sc.agent+'<br><br>The barricades have shifted. Another committee has requested your presence.',()=>{const b=levelBounds(chapter);player.x=b.min+80;player.y=surfaceYAt(player.x)-player.h;player.vx=0;player.vy=0;shots.length=0;enemyShots.length=0;camX=clamp(player.x-VIEW.w*.4,0,WORLD_PX-VIEW.w);camY=clamp(player.y-VIEW.h*.58,0,WORLD_H*TILE-VIEW.h);});
+ }
+}
+function finish(){won=true;showPanel('THE CONSTITUTION IS FOUND','All twenty case files are closed.<br><br>The Constitution was not stolen. It was sitting in the National Archives in a filing cabinet labeled <b>MISC. RECEIPTS — DO NOT MOVE</b>.<br><br><b>PUBLIC RECORD:</b> '+score+'<br><b>PUBLIC CONFIDENCE:</b> '+Math.round(player.rep)+'%<br><br>Washington returns to normal for approximately eleven seconds, then schedules three hearings about why it was normal.',[['REOPEN THE FILES',()=>location.reload()]])}
+function burst(x,y,n,color){for(let i=0;i<n;i++)particles.push({x,y,vx:(rand()-.5)*5,vy:(rand()-.5)*5-1,life:20+rand()*25,color})}
+function resetPlayerForCase(level,hp=100){const b=levelBounds(level);player.hp=clamp(hp,1,100);player.inv=80;player.x=b.min+80;player.y=surfaceYAt(player.x)-player.h;player.vx=0;player.vy=0;shots.length=0;enemyShots.length=0;camX=clamp(player.x-VIEW.w*.4,0,WORLD_PX-VIEW.w);camY=clamp(player.y-VIEW.h*.58,0,WORLD_H*TILE-VIEW.h)}
+function resetCurrentCaseEntities(level){
+ for(let i=enemies.length-1;i>=0;i--)if(enemies[i].level===level)enemies.splice(i,1);
+ for(let i=receipts.length-1;i>=0;i--)if(receipts[i].level===level)receipts.splice(i,1);
+ for(let i=potions.length-1;i>=0;i--)if(potions[i].level===level)potions.splice(i,1);
+ reinforcement[level].kills=0;reinforcement[level].wave=0;
+ spawnAgent(level,7);
+ const base=levelBase(level),bossX=(base+LEVEL_SPAN-8)*TILE;
+ spawn('boss',bossX,surfaceYAt(bossX+29.5)-59,150+Math.min(90,level*4),level);
+ for(const off of [5,14,24,35,46,55]){const x=(base+off)*TILE;receipts.push({x,y:surfaceYAt(x)-66,r:9,level,taken:false,dropped:false,vx:0,vy:0})}
+}
+function retryCurrentCase(){const level=chapter;gameOver=false;closePanel();resetCurrentCaseEntities(level);resetPlayerForCase(level,100);saveGame(true);cutscene('CASE REOPENED — '+scandals[level].title,'The clerk has stamped the file <b>RECONSIDERED</b>. You are back at the start of '+neighborhoods[level].name+'.',()=>{})}
+function skipCurrentCase(){if(!gameOver)return;const skipped=chapter;completedLocations.add(skipped);gameOver=false;player.hp=70;player.ammo=Math.max(player.ammo,8);player.rep=clamp(player.rep-3,0,100);shots.length=0;enemyShots.length=0;closePanel();if(skipped>=LEVEL_COUNT-1){saveGame(true);finish();return}chapter=skipped+1;resetPlayerForCase(chapter,70);saveGame(true);const sc=scandals[chapter];cutscene('CASE DEFERRED — CASE '+String(skipped+1).padStart(2,'0')+' SKIPPED','The committee has moved the previous file to <b>PENDING INDEFINITELY</b>.<br><br><b>NEXT CASE:</b> '+sc.title+'<br><b>NEIGHBORHOOD:</b> '+neighborhoods[chapter].name+'<br><b>POLITICIAN:</b> '+sc.boss+'<br><br>You resume with 70 civility and at least 8 receipts.',()=>{})}
+const defeatScreens={
+ ukraine_impeachment:['THE TRANSCRIPT WON','You were buried beneath call notes, witness summaries and one phone call that somehow generated an entire filing cabinet.'],
+ aoc_metgala:['THE INVOICE WON','The red carpet has referred your unpaid balance to the House Ethics Committee.'],
+ vance_cats:['THE LOTION CAUCUS WON','The bottles have formed a super PAC and your hands are now constitutionally over-moisturized.'],
+ netanyahu_trial:['THE BINDER WON','Exhibit B contained Exhibit C, which contained another binder, which landed directly on your civility.'],
+ putin_icc:['THE LONG TABLE WON','You reached the far end of the table just in time to discover there was another twelve feet of table.'],
+ zelensky_oval:['THE MEETING ENDED EARLY','The bilateral discussion became televised shouting and your delegation has been shown to the motorcade.'],
+ greta_flotilla:['THE MEGAPHONE WON','Your rebuttal was composted, recycled and returned as a protest sign.'],
+ biden_docs:['THE GARAGE WON','The Corvette has retained the documents, the boxes have retained counsel, and you have retained zero civility.'],
+ partygate:['THE WORK EVENT WON','The cake was essential government business. Your survival, apparently, was not.'],
+ santos:['THE BIOGRAPHY WON','According to the résumé, you actually won this fight, founded NATO, and invented the receipt.'],
+ menendez:['THE GOLD BARS WON','The evidence locker was heavier than your argument and considerably more valuable.'],
+ adams_case:['THE UPGRADE WON','Your itinerary was upgraded to a nonstop flight directly out of the investigation.'],
+ truss_lettuce:['THE LETTUCE WON','The lettuce remains crisp, politically resilient and now somehow in possession of your office.'],
+ boebert:['THE USHER WON','You have been escorted from the theater before the second act and the balcony has filed a statement.'],
+ khomeini_archive:['THE STRAIT WON','Your tanker has been redirected, your insurance premium has tripled, and the shipping lane is back in committee.'],
+ cruz_cancun:['THE AIRPORT LOUNGE WON','The thermostat froze, the flight boarded, and your argument missed its connection.'],
+ giuliani_landscaping:['THE LANDSCAPERS WON','Your legal strategy has been mulched. Please direct all appeals to the garden center next door.'],
+ noem_memoir:['THE MEMOIR WON','The advance copy reached the press office before you did. Crisis communications is no longer taking calls.'],
+ gaetz_ethics:['THE ETHICS REPORT WON','The committee report landed on your desk with enough appendices to cause blunt-force procedural damage.'],
+ rfk_bear:['THE WORM WON','The worm has taken the bicycle, the bear, the evidence bag and the last coherent page of your notes.']
+};
+function showCaseDefeat(){
+ const sc=scandals[chapter]||scandals[0],d=defeatScreens[sc.id]||['THE DISCOURSE WON','Washington has produced another argument with no surviving conclusion.'];
+ showPanel('THE DISCOURSE WON',d[1]+'<br><br><b>CASE:</b> '+sc.title+'<br><b>NEIGHBORHOOD:</b> '+neighborhoods[chapter].name+'<br><br>You can reopen this case from the beginning or defer it and move to the next neighborhood.',[['RETRY CASE',retryCurrentCase],['SKIP CASE',skipCurrentCase]])
+}
+function hurt(n,sourceX=player.x-player.face*20){if(player.inv>0)return;player.hp-=n;player.inv=55;player.vx+=(player.x<sourceX?-5:5);player.vy=-4.5;burst(player.x,player.y,8,'#ffcb62');if(player.hp<=0){player.hp=0;gameOver=true;showCaseDefeat()}}
+function defeatEnemy(e){
+ if(e._defeated)return;e._defeated=true;
+ score+=e.type==='boss'?400:45;player.rep=clamp(player.rep+(e.type==='boss'?8:1),0,100);
+ if(e.type==='agent'){reinforcement[e.level].kills++;dropReceiptFromAgent(e)}
+ maybeDropHealthPotion(e);
+ burst(e.x+e.w/2,e.y+e.h/2,14,'#df514b');
+ if(e.type==='boss'){const remaining=chapterAgentsAlive();showPanel(scandals[e.level].boss,'<b>FINAL STATEMENT:</b> '+scandals[e.level].bits[(e.level+score)%scandals[e.level].bits.length]+'<br><br>'+(remaining?('<b>'+remaining+' aides remain.</b> The case stays open until the entire detail is cleared.'):'The principal and the entire detail have been cleared.'),[[remaining?'RETURN TO THE STREET':'CLOSE THE CASE',closePanel]])}
+}
+function damageEnemy(e,amount,x,y,color,points=0){
+ if(e.hp<=0)return false;e.hp-=amount;score+=points;burst(x,y,5,color);if(e.hp<=0)defeatEnemy(e);return true;
+}
+function collideX(o){if(o.vx>0){const tx=Math.floor((o.x+o.w)/TILE),a=Math.floor(o.y/TILE),b=Math.floor((o.y+o.h-1)/TILE);for(let y=a;y<=b;y++)if(solid(tx,y)){o.x=tx*TILE-o.w;o.vx=0;break}}else if(o.vx<0){const tx=Math.floor(o.x/TILE),a=Math.floor(o.y/TILE),b=Math.floor((o.y+o.h-1)/TILE);for(let y=a;y<=b;y++)if(solid(tx,y)){o.x=(tx+1)*TILE;o.vx=0;break}}}
+function collideY(o){o.onGround=false;if(o.vy>0){const ty=Math.floor((o.y+o.h)/TILE),a=Math.floor(o.x/TILE),b=Math.floor((o.x+o.w-1)/TILE);for(let x=a;x<=b;x++)if(solid(x,ty)){o.y=ty*TILE-o.h;o.vy=0;o.onGround=true;break}}else if(o.vy<0){const ty=Math.floor(o.y/TILE),a=Math.floor(o.x/TILE),b=Math.floor((o.x+o.w-1)/TILE);for(let x=a;x<=b;x++)if(solid(x,ty)){o.y=(ty+1)*TILE;o.vy=0;break}}}
+function shoot(){if(player.ammo<=0||fireCooldown>0)return;player.ammo--;fireCooldown=9;const worldMouseX=input.mouseX+camX,worldMouseY=input.mouseY+camY;const dx=worldMouseX-(player.x+player.w/2),dy=worldMouseY-(player.y+player.h/2),len=Math.hypot(dx,dy)||1;shots.push({x:player.x+13,y:player.y+15,vx:dx/len*10,vy:dy/len*10,life:75});}
+function debate(){shots.push({x:player.x+13,y:player.y+14,vx:player.face*9,vy:-.4,life:50,debate:true});}
+
+function spawnEnemyShot(x,y,vx,vy,kind='paper',opts={}){enemyShots.push({x,y,vx,vy,kind,life:opts.life||150,w:opts.w||14,h:opts.h||10,damage:opts.damage||8,gravity:opts.gravity||0,bounce:opts.bounce||0,color:opts.color||'#d35b54',spin:0})}
+function aimedEnemyShot(e,speed,kind,spread=0,opts={}){const dx=(player.x+player.w/2)-(e.x+e.w/2),dy=(player.y+player.h/2)-(e.y+e.h/2),a=Math.atan2(dy,dx)+spread;spawnEnemyShot(e.x+e.w/2,e.y+e.h*.38,Math.cos(a)*speed,Math.sin(a)*speed,kind,opts)}
+const bossAttackLabels={phoneFan:'TRANSCRIPT VOLLEY',galaBurst:'RED-CARPET BURST',pounce:'PODCAST POUNCE',binderBurst:'BINDER BARRAGE',tableCharge:'LONG-TABLE CHARGE',micVolley:'MICROPHONE VOLLEY',climateGust:'PROTEST GUST',boxDrop:'CLASSIFIED BOX DROP',cakeArc:'WORK-EVENT CAKE TOSS',resumeSummon:'RÉSUMÉ RECRUITMENT',goldToss:'GOLD-BAR LOB',boardingPass:'BOARDING-PASS BLITZ',lettuceBounce:'LETTUCE BOUNCE',vapeCloud:'VAPOR CLOUD',archiveRain:'ARCHIVE RAIN',hormuzBarrage:'HORMUZ BARRAGE',suitcaseRush:'CARRY-ON RUSH',rakeLine:'LAWN-AND-ORDER RAKE',memoirStorm:'ADVANCE-COPY STORM',earlyExit:'EARLY-EXIT DASH',ethicsBurst:'ETHICS RECEIPTS',bikeRoll:'BICYCLE EVIDENCE'};
+function bossAttack(e,sc,dx){
+ const dir=Math.sign(dx)||1,style=sc.bossStyle;
+ if(style==='phoneFan'){for(const a of [-.34,-.17,0,.17,.34])aimedEnemyShot(e,5.6,'phone',a,{damage:8,color:'#5c6f86'});e.attackCd=92}
+ else if(style==='galaBurst'){for(let i=0;i<10;i++){const a=i*Math.PI*2/10;spawnEnemyShot(e.x+e.w/2,e.y+e.h/2,Math.cos(a)*4.4,Math.sin(a)*4.4,'confetti',{damage:7,w:10,h:7,color:i%2?'#c34f72':'#e0bd63'})}e.attackCd=110}
+ else if(style==='pounce'){e.vy=-9.5;e.dashTimer=34;e.dashDir=dir;e.dashSpeed=5.9;for(const a of [-.18,.18])aimedEnemyShot(e,4.7,'catcard',a,{damage:7,color:'#8b6a55'});e.attackCd=105}
+ else if(style==='binderBurst'){for(const a of [-.28,-.09,.09,.28])aimedEnemyShot(e,4.2,'binder',a,{damage:10,w:20,h:13,color:'#d7c49a'});e.attackCd=118}
+ else if(style==='tableCharge'){e.dashTimer=52;e.dashDir=dir;e.dashSpeed=7.1;spawnEnemyShot(e.x+e.w/2,e.y+e.h*.6,dir*4.5,-1.2,'table',{damage:11,w:42,h:10,color:'#6f5747'});e.attackCd=132}
+ else if(style==='micVolley'){for(const a of [-.38,-.22,-.08,.08,.22,.38])aimedEnemyShot(e,6.1,'mic',a,{damage:7,w:12,h:12,color:'#707781'});e.attackCd=100}
+ else if(style==='climateGust'){spawnEnemyShot(e.x+e.w/2,e.y+e.h*.45,dir*5.2,0,'gust',{damage:9,w:82,h:28,color:'#91c88a',life:110});e.attackCd=112}
+ else if(style==='boxDrop'){for(const off of [-90,0,90])spawnEnemyShot(player.x+player.w/2+off,Math.max(20,player.y-330),0,.6,'box',{damage:12,w:28,h:25,gravity:.32,color:'#9a7248',life:180});e.attackCd=128}
+ else if(style==='cakeArc'){for(const vy of [-6.8,-5.8,-4.8])spawnEnemyShot(e.x+e.w/2,e.y+20,dir*(3.5+rand()*1.2),vy,'cake',{damage:9,w:18,h:14,gravity:.24,color:'#e8d6ad',life:190});e.attackCd=112}
+ else if(style==='resumeSummon'){if(chapterAgentsAlive()<12)spawnAgent(e.level,2);for(const a of [-.12,.12])aimedEnemyShot(e,4.5,'resume',a,{damage:7,w:17,h:12,color:'#e9dfc7'});e.attackCd=145}
+ else if(style==='goldToss'){for(const a of [-.16,.16])aimedEnemyShot(e,4.9,'gold',a,{damage:13,w:21,h:10,gravity:.11,color:'#d8b83f',life:170});e.attackCd=124}
+ else if(style==='boardingPass'){for(const a of [-.42,-.28,-.14,0,.14,.28,.42])aimedEnemyShot(e,6.5,'pass',a,{damage:6,w:15,h:7,color:'#ddd3b6'});e.attackCd=94}
+ else if(style==='lettuceBounce'){for(const vy of [-4.5,-3.2,-2])spawnEnemyShot(e.x+e.w/2,e.y+16,dir*(4.2+rand()),vy,'lettuce',{damage:9,w:18,h:18,gravity:.28,bounce:2,color:'#86bd66',life:220});e.attackCd=122}
+ else if(style==='vapeCloud'){for(const off of [-1,1])spawnEnemyShot(e.x+e.w/2,e.y+18,dir*(1.7+off*.25),-.3+off*.18,'cloud',{damage:8,w:38,h:30,color:'#b7c8d2',life:190});e.attackCd=116}
+ else if(style==='archiveRain'){for(let i=0;i<8;i++)spawnEnemyShot(player.x-150+rand()*300,Math.max(15,player.y-260-rand()*130),(rand()-.5)*1.2,1+rand()*1.2,'archive',{damage:7,w:16,h:11,gravity:.14,color:'#e6ddc7',life:190});e.attackCd=125}
+ else if(style==='hormuzBarrage'){for(let i=0;i<7;i++)spawnEnemyShot(player.x-170+rand()*340,Math.max(15,player.y-250-rand()*100),(rand()-.5)*1.5,1.3+rand()*1.5,'mine',{damage:9,w:18,h:18,gravity:.12,color:'#56665f',life:190});e.attackCd=126}
+ else if(style==='ethicsBurst'){for(const a of [-.32,-.16,0,.16,.32])aimedEnemyShot(e,5.5,'receipt',a,{damage:8,w:17,h:10,color:'#e4d7bd'});e.dashTimer=24;e.dashDir=-dir;e.dashSpeed=4.8;e.attackCd=112}
+ else if(style==='suitcaseRush'){e.dashTimer=42;e.dashDir=dir;e.dashSpeed=6.2;spawnEnemyShot(e.x+e.w/2,e.y+22,dir*5.4,-2.1,'suitcase',{damage:11,w:24,h:19,gravity:.12,color:'#3e4047',life:170});e.attackCd=120}
+ else if(style==='rakeLine'){for(let i=0;i<5;i++)spawnEnemyShot(e.x+e.w/2,e.y+e.h-10,dir*(3.2+i*.65),-.4,'rake',{damage:8,w:24,h:8,gravity:.05,color:'#7a5b3c',life:150});e.attackCd=108}
+ else if(style==='memoirStorm'){for(let i=0;i<12;i++){const a=i*Math.PI*2/12+.08;spawnEnemyShot(e.x+e.w/2,e.y+e.h/2,Math.cos(a)*4.1,Math.sin(a)*4.1,'memoir',{damage:7,w:15,h:10,color:'#eee1c5'})}e.attackCd=120}
+ else if(style==='earlyExit'){e.dashTimer=46;e.dashDir=-dir;e.dashSpeed=7.4;for(const a of [-.18,0,.18])aimedEnemyShot(e,5.2,'pressbadge',a,{damage:7,w:12,h:10,color:'#d4d9df'});e.attackCd=110}
+ else if(style==='bikeRoll'){for(const sp of [3.8,4.8,5.8])spawnEnemyShot(e.x+e.w/2,e.y+e.h-11,dir*sp,-1.1,'wheel',{damage:9,w:18,h:18,gravity:.16,bounce:1,color:'#2d3237',life:190});e.attackCd=116}
+}
+function updateEnemyShots(frameScale){
+ for(let i=enemyShots.length-1;i>=0;i--){const h=enemyShots[i];h.vy+=h.gravity*frameScale;h.x+=h.vx*frameScale;h.y+=h.vy*frameScale;h.spin+=.08*frameScale;h.life-=frameScale;let remove=h.life<=0||h.x<0||h.x>WORLD_PX||h.y>WORLD_H*TILE+80;const floor=surfaceYAt(h.x)-h.h/2;if(!remove&&h.y>=floor){if(h.bounce>0){h.y=floor;h.vy=-Math.max(3,Math.abs(h.vy)*.68);h.vx*=.9;h.bounce--}else remove=true}
+  if(!remove&&h.x+h.w/2>player.x&&h.x-h.w/2<player.x+player.w&&h.y+h.h/2>player.y&&h.y-h.h/2<player.y+player.h){hurt(h.damage,h.x);remove=true}
+  if(remove)enemyShots.splice(i,1)
+ }
+}
+function update(dt){
+ if(paused||!started||gameOver||won)return;
+ const frameScale=clamp(dt/16.6667,.5,2),steps=Math.max(1,Math.min(3,Math.ceil(frameScale))),step=frameScale/steps;
+ const left=down('a')||down('arrowleft'),right=down('d')||down('arrowright');
+ const jumpPressed=tap(' ')||tap('w')||tap('arrowup');
+ if(jumpPressed)player.jumpBuffer=7;
+ if(player.onGround)player.coyote=7; else player.coyote=Math.max(0,player.coyote-1);
+ if(tap('e'))interact();
+ if(tap('j'))debate();
+ if(tap('k'))saveGame(false);
+ if(input.mouseDown)shoot();
+ fireCooldown=Math.max(0,fireCooldown-frameScale);autosaveClock+=dt;if(autosaveClock>=12000){autosaveClock=0;saveGame(true)}
+ for(let st=0;st<steps;st++){
+   if(left){player.vx-=.65*step;player.face=-1}
+   if(right){player.vx+=.65*step;player.face=1}
+   player.vx*=Math.pow(.84,step);player.vx=clamp(player.vx,-5,5);
+   if(player.jumpBuffer>0&&player.coyote>0){player.vy=-11;player.onGround=false;player.coyote=0;player.jumpBuffer=0}
+   player.jumpBuffer=Math.max(0,player.jumpBuffer-step);
+   const prevPlayerY=player.y;
+   player.vy=clamp(player.vy+.55*step,-20,14);
+   const playerWasFalling=player.vy>0;
+   player.x+=player.vx*step;collideX(player);player.y+=player.vy*step;collideY(player);const pb=levelBounds(chapter);player.x=clamp(player.x,pb.min,pb.max-player.w);
+   if(player.y>WORLD_H*TILE+120){const pb=levelBounds(chapter);player.x=pb.min+80;player.y=surfaceYAt(player.x)-player.h;player.vx=0;player.vy=0;hurt(10,player.x-100)}
+   player.inv=Math.max(0,player.inv-step);
+   for(const e of enemies){
+     if(e.level!==chapter||e.hp<=0)continue;
+     e.cd=Math.max(0,e.cd-step);e.attackCd=Math.max(0,(e.attackCd||0)-step);e.vy=clamp(e.vy+.5*step,-20,12);
+     const dx=(player.x+player.w/2)-(e.x+e.w/2);
+     if(e.type==='boss'&&e.attackCd<=0)bossAttack(e,scandals[e.level],dx);
+     let desired=(e.type==='boss'?Math.sign(dx)*1.15:Math.sign(dx)*1.0)+(e.type==='agent'?Math.sin(e.phase)*.25:0);
+     const mobCase=scandals[e.level]&&scandals[e.level].id;
+     if(e.type==='agent'&&mobCase==='noem_memoir'){desired*=1.45;if(e.onGround&&e.attackCd<=0&&Math.abs(dx)<230){e.vy=-7.2;e.attackCd=72}}
+     if(e.type==='agent'&&mobCase==='rfk_bear'){desired*=1.25;if(e.onGround&&e.attackCd<=0&&Math.abs(dx)<190){e.vy=-5.8;e.attackCd=58}}
+     if(e.type==='agent'&&mobCase==='greta_flotilla'){desired*=.92}
+     if(e.type==='agent'&&mobCase==='vance_cats'&&e.onGround&&e.attackCd<=0&&Math.abs(dx)<220){e.vy=-6.2;e.attackCd=68}
+     if(e.type==='agent'&&mobCase==='truss_lettuce'&&e.onGround&&e.attackCd<=0&&Math.abs(dx)<240){e.vy=-7.5;e.attackCd=62}
+     if(e.type==='boss'&&e.dashTimer>0){desired=(e.dashDir||Math.sign(dx)||1)*(e.dashSpeed||6);e.dashTimer=Math.max(0,e.dashTimer-step)}
+     e.vx=desired;
+     e.x+=e.vx*step;collideX(e);
+     const eb=levelBounds(e.level),levelMin=eb.min+8,levelMax=eb.max-e.w-8;e.x=clamp(e.x,levelMin,levelMax);
+     const blocked=Math.abs(desired)>.2&&Math.abs(e.vx)<.01;
+     if(blocked&&e.onGround)e.vy=-8.4;
+     e.y+=e.vy*step;collideY(e);e.phase+=.04*step;
+     const prevBottom=prevPlayerY+player.h,newBottom=player.y+player.h;
+     const stompOverlap=player.x+player.w-5>e.x&&player.x+5<e.x+e.w;
+     const crossedTop=prevBottom<=e.y+12&&newBottom>=e.y&&newBottom<=e.y+Math.max(26,e.h*.48);
+     if(playerWasFalling&&stompOverlap&&crossedTop){
+       player.y=e.y-player.h;player.vy=e.type==='boss'?-10.6:-9.6;player.onGround=false;player.coyote=0;
+       damageEnemy(e,e.type==='boss'?24:32,e.x+e.w/2,e.y+5,'#f7d25f',20);
+       e.cd=28;burst(player.x+player.w/2,e.y,8,'#fff0a8');continue;
+     }
+     if(Math.abs(dx)<72&&Math.abs((player.y+player.h/2)-(e.y+e.h/2))<58&&e.cd<=0){hurt(e.type==='boss'?14:7,e.x+e.w/2);e.cd=55}
+   }
+ }
+ updateDroppedReceipts(frameScale);
+ updatePotions(frameScale);
+ updateEnemyShots(frameScale);
+ collectReceipts();
+ collectPotions();
+ for(let i=shots.length-1;i>=0;i--){const s=shots[i];s.x+=s.vx*frameScale;s.y+=s.vy*frameScale;s.life-=frameScale;let remove=s.life<=0||s.x<0||s.x>WORLD_PX||s.y<0||s.y>WORLD_H*TILE||solid(Math.floor(s.x/TILE),Math.floor(s.y/TILE));
+   for(const e of enemies){if(remove||e.level!==chapter||e.hp<=0)continue;if(Math.abs(s.x-e.x-e.w/2)<27&&Math.abs(s.y-e.y-e.h/2)<31){damageEnemy(e,s.debate?10:18,s.x,s.y,s.debate?'#62c9e5':'#f1c04f',s.debate?5:15);remove=true}}
+   if(remove)shots.splice(i,1)
+ }
+ for(let i=enemies.length-1;i>=0;i--)if(enemies[i].hp<=0)enemies.splice(i,1);
+ maybeReinforce();
+ for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx*frameScale;p.y+=p.vy*frameScale;p.vy+=.08*frameScale;p.life-=frameScale;if(p.life<=0)particles.splice(i,1)}
+ advanceIfCleared();
+ const target=clamp(player.x-VIEW.w*.4,0,WORLD_PX-VIEW.w);camX+=(target-camX)*.12;
+ const targetY=clamp(player.y-VIEW.h*.58,0,WORLD_H*TILE-VIEW.h);camY+=(targetY-camY)*.14;
+}
+function draw(){ctx.clearRect(0,0,VIEW.w,VIEW.h);const sky=ctx.createLinearGradient(0,0,0,VIEW.h);sky.addColorStop(0,'#262044');sky.addColorStop(.55,'#704d67');sky.addColorStop(1,'#c47b57');ctx.fillStyle=sky;ctx.fillRect(0,0,VIEW.w,VIEW.h);ctx.fillStyle='#f6e5bd';ctx.beginPath();ctx.arc(1050,120,48,0,Math.PI*2);ctx.fill();ctx.fillStyle='#30233d';ctx.beginPath();ctx.arc(1068,108,48,0,Math.PI*2);ctx.fill();
+drawSkyPlane();ctx.save();ctx.translate(-camX,-camY);drawCity();const start=Math.floor(camX/TILE)-2,end=start+Math.ceil(VIEW.w/TILE)+4;for(let x=start;x<=end;x++)for(let y=0;y<WORLD_H;y++)if(solid(x,y)){const px=x*TILE,py=y*TILE,isGround=y>=25;ctx.fillStyle=isGround?'#7a7e82':'#59636d';ctx.fillRect(px,py,TILE,TILE);if(isGround){ctx.fillStyle='#6d7175';ctx.fillRect(px,py,TILE,2);ctx.fillStyle='#909397';ctx.fillRect(px+2,py+7,TILE-4,1);if(x%4===0){ctx.fillStyle='#62666a';ctx.fillRect(px+8,py+22,15,1);ctx.fillRect(px+25,py+28,10,1)}}else{ctx.fillStyle='#7e8992';ctx.fillRect(px,py,TILE,3)}}
+drawNeighborhoodStreet();drawFlyers();drawNeighborhoodSign();drawDistrictBarricades();
+// city landmarks
+for(const l of locations){if(l.chapter!==chapter)continue;const x=l.x,y=l.y-10;ctx.fillStyle='#17131d';ctx.fillRect(x,y,5,50);ctx.fillStyle='#e7ba56';ctx.fillRect(x-45,y-22,145,26);ctx.fillStyle='#17131d';ctx.font='bold 10px monospace';ctx.fillText(l.name.slice(0,22),x-39,y-4)}
+for(const r of receipts)if(!r.taken&&r.level===chapter){ctx.save();ctx.translate(r.x,r.y);ctx.rotate(r.dropped?(r.spin||0):Math.sin(performance.now()/250+r.x)*.08);ctx.fillStyle='#f1dfb2';ctx.fillRect(-9,-6,18,12);ctx.strokeStyle='#17131d';ctx.strokeRect(-9,-6,18,12);ctx.fillStyle='#b52f35';ctx.fillRect(-6,-2,12,2);ctx.restore()}
+for(const p of potions)if(!p.taken&&p.level===chapter){ctx.save();ctx.translate(p.x,p.y);ctx.rotate(Math.sin((p.spin||0))*.12);ctx.fillStyle='#e9eee7';ctx.strokeStyle='#1b2020';ctx.lineWidth=2;ctx.fillRect(-8,-10,16,18);ctx.strokeRect(-8,-10,16,18);ctx.fillStyle='#6f7d70';ctx.fillRect(-5,-15,10,6);ctx.fillStyle='#cf4646';ctx.fillRect(-2,-7,4,12);ctx.fillRect(-6,-3,12,4);ctx.restore()}
+for(const n of NPCS)if(n.level===chapter){drawNPC(n);}
+for(const s of shots){ctx.fillStyle=s.debate?'#62c9e5':'#f7e9bd';ctx.fillRect(s.x-5,s.y-3,10,6)}
+for(const h of enemyShots){ctx.save();ctx.translate(h.x,h.y);ctx.rotate(h.spin);ctx.fillStyle=h.color;ctx.strokeStyle='#201b20';ctx.lineWidth=1;if(h.kind==='wheel'){ctx.beginPath();ctx.arc(0,0,h.w/2,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.fillStyle='#a6a9aa';ctx.beginPath();ctx.arc(0,0,3,0,Math.PI*2);ctx.fill()}else if(h.kind==='cloud'||h.kind==='gust'){ctx.globalAlpha=.55;ctx.beginPath();ctx.ellipse(0,0,h.w/2,h.h/2,0,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1}else if(h.kind==='lettuce'){ctx.beginPath();ctx.arc(0,0,h.w/2,0,Math.PI*2);ctx.fill();ctx.stroke()}else{ctx.fillRect(-h.w/2,-h.h/2,h.w,h.h);ctx.strokeRect(-h.w/2,-h.h/2,h.w,h.h)}ctx.restore()}
+for(const e of enemies)if(e.level===chapter&&e.hp>0)drawEnemy(e);drawPlayer();for(const p of particles){ctx.globalAlpha=Math.max(0,p.life/40);ctx.fillStyle=p.color;ctx.fillRect(p.x,p.y,5,5);ctx.globalAlpha=1}ctx.restore();
+const vg=ctx.createRadialGradient(VIEW.w/2,VIEW.h/2,160,VIEW.w/2,VIEW.h/2,700);vg.addColorStop(0,'transparent');vg.addColorStop(1,'#09070caa');ctx.fillStyle=vg;ctx.fillRect(0,0,VIEW.w,VIEW.h);
+document.getElementById('hp').style.width=clamp(player.hp,0,100)+'%';document.getElementById('rep').style.width=clamp(player.rep,0,100)+'%';const rs=reinforcement[chapter];const aliveAgents=enemies.filter(e=>e.level===chapter&&e.type==='agent'&&e.hp>0).length;const threshold=rs?reinforcementThreshold(rs.wave):0;const bossAlive=chapterBossAlive()?1:0;document.getElementById('stats').textContent='PUBLIC RECORD '+score+' • RECEIPTS '+player.ammo+' • CASE '+String(Math.min(LEVEL_COUNT,chapter+1)).padStart(2,'0')+'/'+LEVEL_COUNT+' • '+neighborhoods[chapter].name+' • '+scandals[chapter].title+' • AGENTS '+aliveAgents+' • BOSS '+(bossAlive?'ACTIVE':'DOWN')+' • TACTIC '+(bossAttackLabels[scandals[chapter].bossStyle]||'SPIN')+' • WAVE '+(rs?rs.wave:0)+'/'+MAX_REINFORCEMENT_WAVES;}
+function px(x,y,w,h,c){ctx.fillStyle=c;ctx.fillRect(Math.round(x),Math.round(y),Math.round(w),Math.round(h))}
+function drawPlayer(){
+  const x=player.x,y=player.y,S=CHAR_SCALE,t=performance.now()/1000;
+  if(player.inv>0&&player.inv%6<3)return;
+  const moving=Math.abs(player.vx)>.35,run=t*(7+Math.min(4,Math.abs(player.vx)));
+  const bob=player.onGround?(moving?Math.abs(Math.sin(run))*1.8:Math.sin(t*2.2)*.55):-1;
+  const swing=moving?Math.sin(run)*2.1:Math.sin(t*1.7)*.35;
+  const blink=(Math.floor(t*2.4)%13===0);
+  ctx.save();ctx.translate(x,y+bob);ctx.scale(S,S);
+  // Subtle run/idle animation: the collision body never changes, only the drawn limbs move.
+  px(6,0,16,2,'#08070b');px(3,2,22,5,'#17131d');px(5,6,18,3,'#29202a');
+  px(5,9,18,10,'#d7a27d');px(7,10,4,3,'#f2d0ad');px(17,10,4,3,'#f2d0ad');
+  if(blink){px(9,13,3,1,'#111018');px(17,13,3,1,'#111018')}else{px(9,12,3,3,'#111018');px(17,12,3,3,'#111018')}
+  px(12,16,7,2,'#8c403f');
+  px(2,19,22,14,'#263c59');px(5,20,16,4,'#557b91');px(12,19,3,14,'#e1bd55');
+  px(4,23+swing*.35,4,5,'#d7a27d');px(20,23-swing*.35,5,5,'#d7a27d');px(0,24+swing*.35,5,4,'#17131d');px(23,24-swing*.35,4,4,'#17131d');
+  const legA=moving?Math.max(0,swing):0,legB=moving?Math.max(0,-swing):0;
+  px(6,33+legA*.35,7,7,'#24202a');px(16,33+legB*.35,7,7,'#24202a');px(4,39+legA*.4,10,3,'#08090d');px(15,39+legB*.4,10,3,'#08090d');
+  px(5,22,4,3,'#e6d25f');px(6,22,2,2,'#7b4939');px(player.face>0?23:1,10,2,2,'#f0d06b');
+  ctx.restore();
+  ctx.fillStyle='#f7e9bd';ctx.font='bold 8px monospace';ctx.fillText('INVESTIGATOR',x-16,y-11+bob);
+}
+function drawNPC(n){
+  const x=n.x,y=n.y,S=CHAR_SCALE,t=performance.now()/1000,bob=Math.sin(t*2+n.x*.01)*.65;
+  ctx.save();ctx.translate(x,y+bob);ctx.rotate(Math.sin(t*1.25+n.x*.013)*.004);ctx.scale(S,S);
+  if(n.kind==='putin'){
+    px(5,8,19,23,'#303842');px(1,17,5,9,'#303842');px(23,17,5,9,'#303842');px(7,28,6,6,'#20262d');px(16,28,6,6,'#20262d');
+    px(7,-10,17,18,'#d8a77f');px(6,-13,19,7,'#8b8d91');px(8,-7,15,5,'#b9b9b2');px(9,1,4,3,'#17131d');px(19,1,4,3,'#17131d');px(13,6,7,2,'#7e403d');px(10,12,9,4,'#1c2228');px(12,12,5,2,'#e0c15b');
+  }else if(n.kind==='kim'){
+    px(3,8,23,23,'#24263a');px(0,17,5,8,'#24263a');px(23,17,5,8,'#24263a');px(7,28,6,6,'#151722');px(16,28,6,6,'#151722');
+    px(6,-10,17,19,'#d6a47c');px(4,-14,21,7,'#171822');px(7,-8,18,4,'#25263a');px(9,1,4,3,'#17131d');px(19,1,4,3,'#17131d');px(11,7,9,2,'#7d3e3d');px(10,11,8,5,'#d9b847');px(13,11,2,5,'#efe0a0');
+  }else if(n.kind==='aoc'){
+    px(5,8,19,23,'#3d6c8a');px(1,18,5,8,'#3d6c8a');px(23,18,5,8,'#3d6c8a');px(7,28,6,6,'#20232d');px(16,28,6,6,'#20232d');
+    px(6,-10,17,19,'#b87955');px(4,-14,21,8,'#2a1720');px(5,-9,4,9,'#2a1720');px(21,-9,4,9,'#2a1720');px(9,1,4,3,'#17131d');px(19,1,4,3,'#17131d');px(12,7,7,2,'#7e3c43');px(7,12,17,3,'#c9d9e5');px(12,15,4,5,'#b34c4d');
+  }else if(n.kind==='clinton'){
+    px(4,8,21,23,'#34466d');px(0,18,6,8,'#34466d');px(22,18,6,8,'#34466d');px(7,28,6,6,'#22232b');px(16,28,6,6,'#22232b');
+    px(6,-10,17,19,'#c88d6a');px(4,-13,21,7,'#b6b1a2');px(6,-7,18,5,'#c8c3b5');px(9,1,4,3,'#17131d');px(19,1,4,3,'#17131d');px(12,7,8,2,'#7c403c');px(12,11,4,7,'#b52d3c');px(16,11,4,2,'#f1d5d0');
+  }else{
+    px(3,8,23,23,'#702f2a');px(0,18,5,8,'#702f2a');px(23,18,5,8,'#702f2a');px(7,28,6,6,'#211d23');px(16,28,6,6,'#211d23');
+    px(5,-10,19,19,'#e2ad78');px(3,-14,22,7,'#e38a22');px(7,-10,18,5,'#f2a52b');px(8,1,4,3,'#17131d');px(19,1,4,3,'#17131d');px(10,7,11,2,'#6f2525');px(10,11,5,7,'#f1e9db');px(15,11,5,7,'#c63d35');
+  }
+  if(n.kind==='trump'){px(27,20,7,5,'#d6b04e');px(29,14,3,8,'#f0e6c9')}
+  if(n.kind==='clinton'){px(-7,13,5,13,'#9b6b39');px(-9,11,9,3,'#d7b35c')}
+  if(n.kind==='aoc'){px(26,14,7,12,'#222936');px(27,12,5,3,'#e5e1d2')}
+  if(n.kind==='putin'){px(-8,17,7,11,'#6d7882');px(-10,15,11,3,'#b4b7b2')}
+  if(n.kind==='kim'){px(27,16,8,4,'#d9b847');px(29,12,4,4,'#171822')}
+  ctx.restore();
+  ctx.fillStyle='#f5e8bf';ctx.font='bold 9px monospace';ctx.fillText(n.name.slice(0,17),x-4,y-23);
+}
+function drawAgent(e,sc){
+  const x=e.x,y=e.y,S=CHAR_SCALE,id=sc.id,t=performance.now()/1000;
+  const moving=Math.abs(e.vx)>.18,phase=t*(moving?6.5:2)+e.phase,bob=moving?Math.abs(Math.sin(phase))*1.15:Math.sin(phase)*.45;
+  ctx.save();ctx.translate(x,y+bob);ctx.rotate(Math.sin(phase*.55)*.006);ctx.scale(S,S);
+  const skin='#d9ab82',dark='#171722',paper='#eee3c5';
+  let suit='#31526e',accent='#d8b74e';
+  // Case-specific enemy silhouettes.
+  if(id==='ukraine_impeachment'){
+    // Plaza Hotel staff: bellhop/concierge uniform.
+    px(2,7,30,26,'#8f1f2d');px(7,1,19,8,'#242127');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(3,21,28,3,'#d4ad4d');px(13,-2,10,4,'#8f1f2d');px(15,-4,6,3,'#d4ad4d');px(25,13,7,10,'#4b3429');
+  }else if(id==='vance_cats'){
+    // Lotion bottle enemy.
+    px(8,7,18,25,'#e9e6dc');px(10,4,14,5,'#d6d1c5');px(13,1,8,4,'#66696e');px(11,15,12,9,'#9fbad1');px(14,18,6,2,'#f7f5ef');px(8,30,5,4,'#b8b5ad');px(21,30,5,4,'#b8b5ad');
+  }else if(id==='zelensky_oval'){
+    // Azov Brigade fighter: olive tactical silhouette.
+    px(2,7,30,26,'#4f5d3d');px(7,1,19,8,'#343b2d');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(4,20,26,8,'#66704e');px(7,22,7,5,'#2d3328');px(18,22,7,5,'#2d3328');px(26,11,5,16,'#3b4133');
+  }else if(id==='biden_docs'){
+    // Fictional party-circle hangers-on.
+    px(3,8,28,25,'#5d5368');px(7,2,18,9,'#42343f');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(4,23,8,7,'#7f6882');px(21,23,8,7,'#7f6882');px(25,12,7,11,'#d8d3c8');
+  }else if(id==='partygate'){
+    // Bottle-service staff with tray.
+    px(5,7,24,26,'#23232a');px(8,1,18,9,'#36262d');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(24,19,10,3,'#b9b6ae');px(26,10,3,9,'#6f8b62');px(30,9,3,10,'#8a6c55');
+  }else if(id==='truss_lettuce'){
+    // Lettuce monster.
+    ctx.fillStyle='#79ad58';for(const [cx,cy,r] of [[17,17,12],[9,17,8],[25,17,8],[13,9,7],[21,9,7]]){ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);ctx.fill()}px(10,16,3,3,dark);px(21,16,3,3,dark);px(14,23,8,2,'#3d6034');
+  }else if(id==='giuliani_landscaping'){
+    // Landscaper with work vest and rake.
+    px(2,8,30,25,'#557446');px(7,2,19,8,'#6b5c45');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(5,22,24,5,'#d7a746');px(28,5,3,25,'#795a38');px(24,5,11,3,'#4f543c');
+  }else if(id==='khomeini_archive'){
+    // IRGC Navy guard.
+    px(2,7,30,26,'#2f4540');px(7,1,19,8,'#1f302d');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(4,20,26,6,'#3d554f');px(24,12,7,11,'#1e2d31');px(13,-1,8,3,'#b33e3e');
+  }else if(id==='adams_case'){
+    // Fictional Turkish political-network henchman: modern suit, lanyard, red dossier.
+    px(2,7,30,26,'#263b56');px(7,1,19,8,'#211c22');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(14,20,3,11,'#d5d5d2');px(22,20,3,11,'#d5d5d2');px(25,13,7,11,'#b83232');px(27,15,3,2,'#f0e6d1');px(1,23,7,5,'#ba3b3b');
+  }else if(id==='noem_memoir'){
+    // Zombie dog: squat quadruped, glowing eyes, torn collar. Cartoon/non-gory.
+    ctx.save();ctx.translate(-2,7+Math.sin(phase)*1.5);px(4,13,24,13,'#6f8068');px(25,8,13,12,'#758a6d');px(30,10,3,3,'#d54d4d');px(35,10,3,3,'#d54d4d');px(32,17,8,3,'#3d4738');px(7,24,5,9,'#55634f');px(22,24,5,9,'#55634f');px(1,15,6,4,'#55634f');px(27,20,10,3,'#9a493f');px(9,11,5,2,'#aab09a');ctx.restore();
+  }else if(id==='netanyahu_trial'){
+    // Mossad parody agent: dark suit, sunglasses, earpiece, badge.
+    px(2,7,30,26,'#252b35');px(6,1,22,8,'#2b2728');px(8,10,14,10,skin);px(9,12,6,3,'#121820');px(17,12,6,3,'#121820');px(15,13,2,1,'#696f78');px(11,17,9,2,'#70403d');px(25,13,6,9,'#37404a');px(26,15,4,3,'#d9d9d4');px(29,8,2,6,'#b7b7b2');px(30,7,3,3,'#24272c');
+  }else if(id==='greta_flotilla'){
+    // Protestor with hand-held placard.
+    px(3,8,28,25,'#506f5d');px(7,2,18,9,'#4a342d');px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(26,-5,3,24,'#785c3a');px(18,-12,23,12,'#e7dfc9');px(20,-9,19,2,'#36865c');px(20,-5,16,2,'#33363c');px(1,22,7,5,'#d7d0bd');
+  }else if(id==='putin_icc'){
+    // Retro KGB-style agent: trench coat + ushanka; explicitly historical parody.
+    px(2,8,30,25,'#555b5e');px(5,1,24,8,'#3b3d41');px(6,-2,22,5,'#282a2f');px(8,10,14,9,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#71413d');px(0,18,6,13,'#4b5053');px(27,18,6,13,'#4b5053');px(15,0,3,3,'#b24747');
+  }else if(id==='cruz_cancun'){
+    // Zodiac clone: black hood and the famous circle-cross motif, clearly a meme enemy.
+    px(2,7,30,26,'#24252b');px(6,0,22,13,'#111218');px(8,10,14,10,'#d8c39f');px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#6f3f3f');ctx.strokeStyle='#e8e2d3';ctx.lineWidth=2;ctx.beginPath();ctx.arc(17,26,6,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.moveTo(11,26);ctx.lineTo(23,26);ctx.moveTo(17,20);ctx.lineTo(17,32);ctx.stroke();px(26,13,5,11,'#43454d');
+  }else if(id==='rfk_bear'){
+    // Brain-eating worm parody: segmented, wiggly parasite sprite.
+    ctx.save();ctx.translate(2,8+Math.sin(phase*1.4)*3);const seg=['#a9986f','#b7a57d','#c1af85','#aa966d'];for(let i=0;i<5;i++){ctx.fillStyle=seg[i%seg.length];ctx.beginPath();ctx.arc(5+i*6,16+Math.sin(phase+i*.8)*3,6,0,Math.PI*2);ctx.fill()}ctx.fillStyle='#2a2020';ctx.fillRect(29,13+Math.sin(phase+3.2)*3,3,3);ctx.fillStyle='#d66a5f';ctx.fillRect(31,18+Math.sin(phase+3.2)*3,5,2);ctx.restore();
+  }else if(id==='gaetz_ethics'){
+    // Adult female congressional/campaign intern silhouette with redacted badge and clipboard.
+    px(3,8,28,25,'#35465f');px(8,2,18,9,'#3a252d');px(6,-1,6,25,'#3a252d');px(24,-1,6,25,'#3a252d');
+    px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');
+    px(9,22,16,8,'#e8e2d6');px(14,20,3,10,'#b33c48');px(25,13,8,12,'#d8d1c4');px(27,15,4,2,'#5e6875');px(27,19,4,2,'#5e6875');
+    px(1,21,7,8,'#35465f');px(28,21,6,8,'#35465f');px(11,30,6,4,dark);px(21,30,6,4,dark);
+  }else if(id==='ukraine_impeachment'||id==='zelensky_oval'){
+    suit='#344d72';accent='#cfd8e7';px(2,8,30,25,suit);px(7,2,20,10,dark);px(8,10,14,10,skin);px(10,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(24,12,8,4,'#bfc9d4');px(0,24,8,5,accent)
+  }else if(id==='biden_docs'||id==='aoc_metgala'){
+    suit='#6d6657';accent='#c7a868';px(3,7,28,26,suit);px(8,1,14,9,'#6b5645');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(25,16,8,10,'#8b6b48');px(26,18,6,5,paper);px(28,19,2,2,'#b34e4e')
+  }else if(id==='partygate'||id==='vance_cats'){
+    suit='#654a38';accent='#d6a84b';px(3,8,28,25,suit);px(8,1,14,9,'#3c2831');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(25,13,7,4,'#e8ddca');px(27,17,4,8,accent)
+  }else if(id==='santos'){
+    suit='#44628c';accent='#e7e2d5';px(2,7,30,25,suit);px(8,1,14,9,'#2c2530');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(25,12,8,11,paper);px(27,14,5,2,'#bd4141');px(27,18,5,2,'#3f6f9d')
+  }else if(id==='menendez'){
+    suit='#6b4c24';accent='#d8bb42';px(2,7,30,26,suit);px(8,1,14,9,'#33221a');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(24,12,8,8,'#c8a83d');px(25,15,6,4,'#e6c958');px(1,24,7,5,'#d8bb42')
+  }else if(id==='boebert'){
+    suit='#6b3d76';accent='#a9d4e7';px(3,7,28,25,suit);px(7,1,18,9,'#2a172f');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(24,14,8,8,'#87c9d8');px(25,16,6,4,'#cfd7e4');px(0,20,6,8,'#6b3d76')
+  }else if(id==='truss_lettuce'){
+    suit='#466a42';accent='#8fc36c';px(2,7,30,26,suit);px(7,1,19,9,'#3c2b2b');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(24,13,8,10,accent);px(26,16,4,4,'#c7e48f')
+  }else{
+    suit='#594456';accent='#c4b6cc';px(2,7,30,26,suit);px(7,1,19,9,'#2b202d');px(8,10,14,10,skin);px(11,12,3,3,dark);px(18,12,3,3,dark);px(11,17,9,2,'#7b3c42');px(24,12,8,12,paper);px(25,14,6,2,accent);px(25,18,6,2,'#8e718f')
+  }
+  if(!['noem_memoir','rfk_bear','vance_cats','truss_lettuce','gaetz_ethics'].includes(id)){px(7,30,6,5,dark);px(18,30,6,5,dark)}
+  ctx.restore();
+  ctx.fillStyle='#f7e9bd';ctx.font='bold 7px monospace';ctx.fillText(sc.agent.slice(0,24),x-5,y-10);
+}
+function drawPoliticianBoss(e,sc){
+ const x=e.x,y=e.y,S=CHAR_SCALE,k=sc.bossKind||'generic',t=performance.now()/1000,bob=Math.sin(t*2.15+e.phase)*1.05,sway=Math.sin(t*1.1+e.phase)*.009;
+ const skins={trump:'#e3aa73',aoc:'#b97856',vance:'#d5a37f',netanyahu:'#c9906d',putin:'#d5a27c',zelensky:'#cf936d',greta:'#e0b18b',biden:'#d8aa87',johnson:'#e1b58f',santos:'#c8906e',menendez:'#c98b66',adams:'#8a5a43',truss:'#d9aa83',boebert:'#d6a27c',cruz:'#c9906f',giuliani:'#d0a17e',noem:'#d6a07b',rfk:'#c89a78',khamenei:'#c99b77',gaetz:'#d2a17d'};
+ const skin=skins[k]||'#d7a27d';
+ const wardrobe={
+  trump:{body:'#243756',shirt:'#f2eee4',tie:'#be3838',hair:'#e0bb63',shoe:'#1c2028'},
+  aoc:{body:'#f2f0ea',shirt:'#1c1a1d',tie:'#d14949',hair:'#24151d',shoe:'#2b2326'},
+  vance:{body:'#2d3b59',shirt:'#efe9dc',tie:'#b34040',hair:'#34292c',shoe:'#1a1f27'},
+  netanyahu:{body:'#222f4a',shirt:'#f0eadf',tie:'#4f6fb8',hair:'#77736f',shoe:'#1b1f26'},
+  putin:{body:'#333843',shirt:'#f3eee0',tie:'#7d3941',hair:'#bdb7ae',shoe:'#1a1d24'},
+  zelensky:{body:'#55633a',shirt:'#55633a',tie:'#4a5533',hair:'#2e2620',shoe:'#1b2215'},
+  greta:{body:'#6e8c47',shirt:'#f1e8d7',tie:'#d3c456',hair:'#8a6845',shoe:'#2f3426'},
+  biden:{body:'#213a66',shirt:'#efece2',tie:'#4c76b7',hair:'#e5e3de',shoe:'#1a1f28'},
+  johnson:{body:'#253a66',shirt:'#efe8db',tie:'#bb4240',hair:'#e5c86f',shoe:'#1a1d24'},
+  santos:{body:'#30496f',shirt:'#efe8dc',tie:'#b64242',hair:'#241d22',shoe:'#1b1f27'},
+  menendez:{body:'#333a43',shirt:'#efe6d7',tie:'#aa2f33',hair:'#4d454c',shoe:'#1a1d24'},
+  adams:{body:'#2b4d70',shirt:'#ebe5d9',tie:'#4ea6cf',hair:'#1d2730',shoe:'#1a1f27'},
+  truss:{body:'#355a8b',shirt:'#ede8dc',tie:'#4b74a2',hair:'#d7b666',shoe:'#1a1f27'},
+  boebert:{body:'#5c3d66',shirt:'#efe8dc',tie:'#76bfd0',hair:'#2a172f',shoe:'#241928'},
+  cruz:{body:'#223a56',shirt:'#eee7da',tie:'#b63d3a',hair:'#2d2226',shoe:'#171d25'},
+  giuliani:{body:'#4b4d55',shirt:'#efe7da',tie:'#b83e3d',hair:'#b8b6b2',shoe:'#1b1d23'},
+  noem:{body:'#a23333',shirt:'#efe7db',tie:'#7a2020',hair:'#31252a',shoe:'#241d20'},
+  rfk:{body:'#455f3f',shirt:'#d8d0c3',tie:'#455f3f',hair:'#c2beb4',shoe:'#1d211a'},
+  khamenei:{body:'#111216',shirt:'#ece8dd',tie:'#111216',hair:'#17171b',shoe:'#0d0f14'},
+  gaetz:{body:'#293a55',shirt:'#eee7db',tie:'#b23d42',hair:'#3a2b2e',shoe:'#171b22'}
+ };
+ const look=wardrobe[k]||{body:'#38465a',shirt:'#eee7db',tie:'#b64242',hair:'#34292c',shoe:'#1d2028'};
+ const body=look.body, shirt=look.shirt, tie=look.tie, hair=look.hair, shoe=look.shoe;
+ ctx.save();ctx.translate(x,y+bob);ctx.rotate(sway);ctx.scale(S,S);
+ // torso + limbs, default suit/blocking
+ px(5,23,37,19,body);px(14,23,19,12,shirt);px(21,24,5,15,tie);px(3,29,8,12,body);px(36,29,8,12,body);px(8,40,11,6,shoe);px(28,40,11,6,shoe);
+ // head / face
+ px(10,5,27,21,skin);px(12,12,5,3,'#17131d');px(29,12,5,3,'#17131d');px(18,19,12,2,'#7b3f3d');
+ // per-boss clothing + hair silhouette
+ if(k==='trump'){
+   px(8,0,31,8,hair);px(9,-3,24,5,'#efcc71');px(29,2,11,5,'#c99f45');px(19,24,9,19,'#ca3838');
+ }
+ else if(k==='aoc'){
+   px(4,22,39,20,'#f5f3ed');px(17,23,15,13,'#111214');px(6,-3,8,30,hair);px(35,-3,8,30,hair);px(10,-5,27,8,hair);px(15,25,18,4,'#cf4747');
+ }
+ else if(k==='vance'){
+   px(8,-3,31,9,hair);px(12,18,23,6,'#5b4036');px(18,24,8,15,'#b64040');
+ }
+ else if(k==='netanyahu'){
+   px(8,-2,31,8,hair);px(9,0,8,4,'#a5a19b');px(19,24,8,15,'#4f72c0');
+ }
+ else if(k==='putin'){
+   px(11,-1,25,6,hair);px(20,24,7,15,'#7c3940');
+ }
+ else if(k==='zelensky'){
+   px(4,22,39,20,body);px(13,22,21,11,'#667845');px(8,-3,31,8,hair);px(12,20,23,4,'#4c3b31');px(16,30,16,4,'#6b7a48');
+ }
+ else if(k==='greta'){
+   px(4,22,39,20,'#7fa043');px(14,23,20,13,'#c6d474');px(7,-3,34,8,hair);px(6,2,8,25,hair);px(36,2,7,25,hair);px(11,28,25,3,'#d4e88f');
+ }
+ else if(k==='biden'){
+   px(9,1,8,5,hair);px(31,1,7,7,hair);px(10,-1,5,4,'#eee9df');px(33,-1,4,4,'#eee9df');px(19,24,8,15,'#4c76b7');
+ }
+ else if(k==='johnson'){
+   px(7,-3,34,9,hair);px(5,1,11,6,'#efd47c');px(31,0,11,7,'#efd47c');px(19,24,8,15,'#b94543');
+ }
+ else if(k==='santos'){
+   px(8,-2,31,9,hair);px(10,-5,24,5,'#352b30');px(19,24,8,15,'#b64242');
+ }
+ else if(k==='menendez'){
+   px(8,-1,31,8,hair);px(9,0,8,4,'#777276');px(19,24,8,15,'#a53032');
+ }
+ else if(k==='adams'){
+   px(7,1,19,7,hair);px(18,24,9,15,'#4eb9d2');px(8,22,31,20,'#284a6d');
+ }
+ else if(k==='truss'){
+   px(4,22,39,20,'#3d6ea4');px(15,23,18,13,shirt);px(6,-2,35,9,hair);px(6,3,8,23,hair);px(35,3,7,23,hair);px(19,24,8,15,'#3f6898');
+ }
+ else if(k==='boebert'){
+   px(4,22,39,20,'#5c3d66');px(16,23,16,13,'#87c9d8');px(6,-2,8,29,hair);px(35,-2,7,29,hair);px(10,-4,27,8,hair);px(11,10,6,5,'#c7e5ef');px(28,10,6,5,'#c7e5ef');
+ }
+ else if(k==='khamenei'){
+   px(4,22,39,20,'#111216');px(10,22,27,18,'#0f1014');px(6,-10,35,12,'#121317');px(8,-14,30,8,'#15161a');px(8,18,31,12,'#e7e3da');px(12,11,7,2,'#282830');px(28,11,7,2,'#282830');
+ }
+ else if(k==='gaetz'){
+   px(8,-4,31,10,'#3a2b2e');px(10,-7,25,5,'#4a3438');px(19,24,8,15,'#b23d42');
+ }
+ else if(k==='cruz'){
+   px(8,-3,31,9,hair);px(11,19,25,6,'#4d342e');px(14,21,18,5,'#30221f');px(19,24,8,15,'#b63d3a');
+ }
+ else if(k==='giuliani'){
+   px(8,0,7,7,'#c9c5bd');px(33,0,6,8,'#c9c5bd');px(11,-2,26,4,'#8e8d89');px(12,12,6,2,'#262228');px(28,12,6,2,'#262228');px(19,24,8,15,'#b83e3d');
+ }
+ else if(k==='noem'){
+   px(4,22,39,20,'#a23333');px(15,23,18,13,shirt);px(6,-4,8,30,hair);px(35,-4,8,30,hair);px(9,-6,29,9,hair);px(19,24,8,15,'#7a2020');
+ }
+ else if(k==='rfk'){
+   px(4,22,39,20,'#455f3f');px(13,23,20,12,'#d0cabd');px(9,-2,29,7,'#aaa69d');px(11,-5,25,5,'#c2beb4');px(10,20,27,4,'#857264');
+ }
+ drawBossProp(e,sc);
+ px(0,-10,47,5,'#17131d');px(1,-9,45*clamp(e.hp/e.maxHp,0,1),4,'#d94c45');
+ ctx.restore();ctx.fillStyle='#f7e9bd';ctx.font='bold 9px monospace';ctx.textAlign='center';ctx.fillText(sc.boss,x+e.w/2,y-18);ctx.textAlign='left';
+}
+function drawEnemy(e){const sc=scandals[e.level]||scandals[0];if(e.type==='boss')drawPoliticianBoss(e,sc);else if(e.type==='agent')drawAgent(e,sc);}
+function drawFlag(f){
+ const t=performance.now()/360+f.phase,dir=f.side||1;
+ ctx.save();ctx.translate(f.x,f.y);
+ // Roofline mounting plate + pole: flags only exist well above the play lane.
+ ctx.fillStyle='#4d5054';ctx.fillRect(-6,-2,12,8);ctx.fillStyle='#a7aaad';ctx.fillRect(-3,-58,5,62);
+ ctx.fillStyle='#c7a756';ctx.beginPath();ctx.arc(-.5,-59,4,0,Math.PI*2);ctx.fill();
+ const ox=2,oy=-55,seg=10,sw=f.w/seg,top=[],bottom=[];
+ for(let i=0;i<=seg;i++){
+   const xx=ox+dir*i*sw,amp=(i/seg)*4.5,wave=Math.sin(t+i*.72)*amp+Math.sin(t*.7+i*1.33)*amp*.25;
+   top.push([xx,oy+wave]);bottom.push([xx,oy+f.h+wave*.55]);
+ }
+ ctx.beginPath();ctx.moveTo(...top[0]);for(let i=1;i<=seg;i++)ctx.lineTo(...top[i]);for(let i=seg;i>=0;i--)ctx.lineTo(...bottom[i]);ctx.closePath();
+ ctx.shadowColor='#0007';ctx.shadowBlur=3;ctx.shadowOffsetY=3;ctx.fillStyle='#f1efe8';ctx.fill();ctx.shadowBlur=0;ctx.strokeStyle='#47474b';ctx.lineWidth=1;ctx.stroke();ctx.clip();
+ // Use recognizable cloth designs instead of tiny text printed on a flag.
+ const left=Math.min(ox,ox+dir*f.w),right=Math.max(ox,ox+dir*f.w),W=right-left;
+ if(f.kind==='us'){
+   for(let r=0;r<7;r++){ctx.fillStyle=r%2===0?'#b33d43':'#f2eee2';ctx.fillRect(left,oy+r*(f.h/7),W,f.h/7+1)}
+   ctx.fillStyle='#38537a';ctx.fillRect(dir>0?left:right-W*.42,oy,W*.42,f.h*.54);
+   ctx.fillStyle='#f4f1df';for(let yy=0;yy<3;yy++)for(let xx=0;xx<4;xx++){const sx=(dir>0?left:right-W*.42)+6+xx*7;ctx.fillRect(sx,oy+6+yy*7,2,2)}
+ }else{
+   ctx.fillStyle='#f4f1ea';ctx.fillRect(left,oy,W,f.h);
+   ctx.fillStyle='#c53f43';ctx.fillRect(left,oy+f.h*.44,W,f.h*.13);ctx.fillRect(left,oy+f.h*.66,W,f.h*.13);
+   const starX=dir>0?left+W*.22:right-W*.22;ctx.font='bold 10px serif';ctx.fillStyle='#c53f43';ctx.textAlign='center';ctx.fillText('★★★',starX,oy+12);ctx.textAlign='left';
+ }
+ ctx.restore();
+}
+function drawSkyPlane(){
+ const sc=scandals[chapter]||scandals[0],t=performance.now()/1000,cycle=VIEW.w+820,pxs=((t*72)%cycle)-460,y=88+Math.sin(t*.3)*8;
+ ctx.save();ctx.translate(pxs,y);
+ ctx.fillStyle='#1f2026';ctx.beginPath();ctx.moveTo(0,14);ctx.lineTo(18,14);ctx.lineTo(27,5);ctx.lineTo(40,6);ctx.lineTo(53,13);ctx.lineTo(68,15);ctx.lineTo(65,20);ctx.lineTo(42,19);ctx.lineTo(28,25);ctx.lineTo(18,24);ctx.lineTo(23,19);ctx.lineTo(0,19);ctx.closePath();ctx.fill();
+ ctx.fillStyle='#d5d9dc';ctx.fillRect(30,8,10,4);ctx.fillStyle='#7b8790';for(let i=0;i<3;i++)ctx.fillRect(38+i*8,14,5,3);
+ const bx=74,by=18,bw=320,bh=28,rope=Math.sin(t*2.1)*4;ctx.strokeStyle='#2b2830';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(65,17);ctx.quadraticCurveTo(69,18,bx,by+7+rope*.2);ctx.stroke();
+ ctx.beginPath();ctx.moveTo(bx,by);ctx.quadraticCurveTo(bx+45,by+rope,bx+95,by);ctx.quadraticCurveTo(bx+160,by-rope,bx+235,by);ctx.quadraticCurveTo(bx+285,by+rope,bx+bw,by);ctx.lineTo(bx+bw,by+bh);ctx.quadraticCurveTo(bx+285,by+bh+rope,bx+235,by+bh);ctx.quadraticCurveTo(bx+160,by+bh-rope,bx+95,by+bh);ctx.quadraticCurveTo(bx+45,by+bh+rope,bx,by+bh);ctx.closePath();ctx.fillStyle='#eee2c4';ctx.fill();ctx.strokeStyle='#443a3c';ctx.stroke();ctx.save();ctx.clip();ctx.fillStyle='#33282e';ctx.font='bold 11px monospace';ctx.fillText('WASHINGTON HAS RECEIPTS',bx+12,by+17);ctx.font='7px monospace';ctx.fillText((sc.headline+' • '+sc.agent+' • CALL COUNSEL').slice(0,59),bx+12,by+27);ctx.globalAlpha=.15;for(let xx=bx+30;xx<bx+bw;xx+=38){ctx.strokeStyle='#776d59';ctx.beginPath();ctx.moveTo(xx,by-2);ctx.lineTo(xx+9,by+bh+2);ctx.stroke()}ctx.restore();ctx.restore();
+}
+function drawDistrictBarricades(){
+ const b=levelBounds(chapter),ground=25*TILE;
+ for(const x of [b.min,b.max]){
+  ctx.save();ctx.translate(x,ground-47);
+  ctx.fillStyle='#bfc3c6';ctx.fillRect(-8,0,16,43);ctx.fillStyle='#d8dadd';ctx.fillRect(-36,9,72,13);ctx.strokeStyle='#34363a';ctx.lineWidth=2;ctx.strokeRect(-36,9,72,13);
+  for(let i=-32;i<30;i+=18){ctx.fillStyle=((i/18)&1)?'#bb3d3d':'#ece5d2';ctx.fillRect(i,11,13,9)}
+  ctx.fillStyle='#25262a';ctx.font='bold 7px monospace';ctx.fillText('PRESS AREA',-24,-4);ctx.restore();
+ }
+}
+function drawNeighborhoodSign(){
+ const b=levelBounds(chapter),hood=neighborhoods[chapter],x=b.min+85,y=25*TILE-92;
+ ctx.save();ctx.fillStyle='#343a3f';ctx.fillRect(x,y+24,6,68);ctx.fillStyle='#245b45';ctx.fillRect(x-8,y,190,31);ctx.strokeStyle='#e9e5d5';ctx.lineWidth=2;ctx.strokeRect(x-6,y+2,186,27);ctx.fillStyle='#f3f0e5';ctx.font='bold 12px monospace';ctx.fillText(hood.name,x+4,y+19);ctx.restore();
+}
+function drawBossProp(e,sc){
+ const id=sc.id;
+ ctx.save();
+ if(id==='ukraine_impeachment'){px(32,4,12,18,'#20232a');px(35,7,6,11,'#d9d4c8');px(34,20,8,3,'#8b3037')}
+ else if(id==='aoc_metgala'){px(0,29,18,10,'#b63f4f');px(2,31,14,2,'#f0d7d9');px(27,2,16,17,'#eee2c8');px(29,5,12,2,'#b63f4f')}
+ else if(id==='vance_cats'){px(29,2,14,16,'#d8d0bd');px(31,5,10,2,'#555d78');px(34,10,4,5,'#33313a');px(1,30,14,8,'#6b5b4b')}
+ else if(id==='netanyahu_trial'){px(1,28,17,12,'#d9d4c8');px(3,31,13,2,'#475f79');px(29,27,14,13,'#c7b58c')}
+ else if(id==='putin_icc'){px(29,2,15,19,'#efe8d7');px(31,5,11,2,'#b54242');px(31,9,9,2,'#555');px(1,30,18,8,'#4b5666')}
+ else if(id==='zelensky_oval'){px(0,29,18,10,'#59694d');px(30,3,13,17,'#e7e1cf');px(32,6,9,2,'#4f6647')}
+ else if(id==='greta_flotilla'){px(28,1,16,19,'#d9ead7');px(30,4,12,2,'#3f7358');px(30,8,10,2,'#3f7358');px(1,28,17,11,'#65849a')}
+ else if(id==='khomeini_archive'){px(1,31,22,5,'#405f68');px(5,26,14,6,'#697b72');px(29,5,13,4,'#4d5955');px(34,1,3,13,'#b44747');px(27,15,16,3,'#6d7d77')}
+ else if(id==='jan6'){px(2,2,10,18,'#b0b3b8');px(4,4,6,14,'#55606b');px(30,2,10,18,'#b0b3b8')}
+ else if(id==='biden_docs'||id==='trump_docs'){px(2,29,15,10,'#9b7448');px(4,31,11,2,'#d7c7a3');px(28,28,15,11,'#8f6842')}
+ else if(id==='partygate'){px(28,3,15,10,'#ead9b5');px(31,0,2,6,'#e8a44e');px(35,0,2,6,'#e8a44e');px(39,0,2,6,'#e8a44e')}
+ else if(id==='santos'){px(1,27,17,12,'#eee3c7');px(3,29,13,2,'#bd4a4a');px(3,33,10,2,'#496c99')}
+ else if(id==='menendez'){px(1,30,14,7,'#d8b642');px(29,30,14,7,'#d8b642');px(3,31,10,2,'#f0d866')}
+ else if(id==='boebert'){px(31,4,9,14,'#87c9d8');px(33,6,5,8,'#d9e6eb')}
+ else if(id==='bowman'){px(34,5,6,17,'#f0b64c');px(36,8,2,10,'#fff0bf')}
+ else if(id==='adams_case'){px(30,1,14,18,'#e9dfc4');px(32,4,10,2,'#3e6674');px(32,8,8,2,'#b54a4a');px(35,13,5,3,'#d2ad55')}
+ else if(id==='trump_hush'){px(1,29,17,10,'#6b5946');px(3,31,13,6,'#eee2c5')}
+ else if(id==='biden_hur'){px(29,2,15,18,'#ece4cf');px(31,5,11,2,'#777');px(31,9,9,2,'#777')}
+ else if(id==='election_betting'){px(1,29,18,9,'#d6c782');px(3,31,14,2,'#52683e');px(3,35,10,2,'#815b3e')}
+ else if(id==='truss_lettuce'){ctx.fillStyle='#8fc36c';ctx.beginPath();ctx.arc(38,10,9,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#45693e';ctx.stroke()}
+ else if(id==='gaetz_ethics'){px(28,1,16,19,'#eee3c7');px(30,4,12,2,'#6f5d72');px(30,8,10,2,'#6f5d72');px(30,12,11,2,'#6f5d72')}
+ else if(id==='cruz_cancun'){px(1,27,18,13,'#33363d');px(3,29,14,2,'#d8c9a8');px(31,4,12,15,'#e6dec9');px(33,7,8,2,'#4d6577')}
+ else if(id==='giuliani_landscaping'){px(1,29,20,5,'#7b5a35');px(16,19,4,20,'#766146');px(12,18,13,3,'#505c3d');px(30,28,14,12,'#6f814e')}
+ else if(id==='noem_memoir'){px(28,2,16,20,'#e7dcc2');px(30,5,12,2,'#6a5748');px(30,9,10,2,'#9d4f4f');px(1,29,18,10,'#8b6a50')}
+ else if(id==='rfk_bear'){ctx.strokeStyle='#2d3237';ctx.lineWidth=2;ctx.beginPath();ctx.arc(36,9,8,0,Math.PI*2);ctx.stroke();ctx.beginPath();ctx.arc(20,31,7,0,Math.PI*2);ctx.stroke();px(28,27,15,4,'#52664a')}
+ ctx.restore();
+}
+function drawTree(x,ground,scale=1){
+ ctx.save();ctx.globalAlpha=.86;ctx.fillStyle='#4f493e';ctx.fillRect(x-3*scale,ground-70*scale,6*scale,70*scale);ctx.fillStyle='#314f3c';
+ for(const [dx,dy,r] of [[0,-80,24],[-15,-67,19],[16,-67,20],[-4,-96,18]]){ctx.beginPath();ctx.arc(x+dx*scale,ground+dy*scale,r*scale,0,Math.PI*2);ctx.fill()}ctx.restore();
+}
+function drawWindows(b,cols=4,rows=5,modern=false){
+ const pad=12,gapX=Math.max(18,(b.w-pad*2)/cols),gapY=Math.max(24,(b.h-30)/rows);
+ for(let c=0;c<cols;c++)for(let r=0;r<rows;r++){
+  const wx=b.x+pad+c*gapX,wy=b.y+18+r*gapY,ww=Math.min(modern?20:13,gapX-7),wh=Math.min(modern?17:14,gapY-8);
+  if(wy+wh>b.y+b.h-18)continue;ctx.fillStyle='#252a30';ctx.fillRect(wx,wy,ww,wh);ctx.fillStyle=((c+r+b.index)%4===0)?b.window:'#758087';ctx.fillRect(wx+2,wy+2,ww-4,wh-4);
+  if(!modern){ctx.fillStyle='#44494e';ctx.fillRect(wx+ww/2-1,wy+2,2,wh-4)}
+ }
+}
+function drawBuilding(b,hood){
+ ctx.save();ctx.fillStyle=b.trim;ctx.fillRect(b.x,b.y,b.w,b.h);ctx.fillStyle=b.facade;ctx.fillRect(b.x+5,b.y+6,b.w-10,b.h-6);
+ const v=b.variant;
+ if(['federal','capitol','porch','colorful','victorian','leafy'].includes(v)){
+   ctx.fillStyle=b.trim;ctx.fillRect(b.x,b.y,b.w,7);ctx.fillRect(b.x+4,b.y+10,5,b.h-10);ctx.fillRect(b.x+b.w-9,b.y+10,5,b.h-10);
+   const cols=Math.max(2,Math.floor(b.w/55));drawWindows(b,cols,Math.max(3,Math.floor(b.h/58)),false);
+   // DC rowhouse cues: raised stoop, dark entry, bays/cornice.
+   ctx.fillStyle='#24252a';ctx.fillRect(b.x+b.w*.43,b.y+b.h-54,22,54);ctx.fillStyle=b.trim;for(let s=0;s<3;s++)ctx.fillRect(b.x+b.w*.39-s*3,b.y+b.h-12+s*4,38+s*6,4);
+   if(v==='victorian'||v==='colorful'){ctx.strokeStyle=b.trim;ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(b.x+b.w*.18,b.y+15);ctx.lineTo(b.x+b.w*.18,b.y+b.h-70);ctx.stroke()}
+   if(v==='porch'){ctx.fillStyle=b.trim;ctx.fillRect(b.x+8,b.y+b.h-72,b.w-16,8);for(let q=18;q<b.w-12;q+=34)ctx.fillRect(b.x+q,b.y+b.h-68,4,48)}
+ }else if(v==='storefront'||v==='warehouse'){
+   ctx.fillStyle=b.trim;ctx.fillRect(b.x,b.y,b.w,8);drawWindows(b,Math.max(3,Math.floor(b.w/45)),Math.max(2,Math.floor((b.h-65)/48)),false);
+   ctx.fillStyle='#25292e';ctx.fillRect(b.x+8,b.y+b.h-57,b.w-16,57);for(let q=b.x+14;q<b.x+b.w-20;q+=48){ctx.fillStyle=b.window;ctx.fillRect(q,b.y+b.h-48,35,25);ctx.fillStyle=hood.accent;ctx.fillRect(q-2,b.y+b.h-58,39,8)}
+ }else if(v==='modern'||v==='modernmix'||v==='waterfront'||v==='downtown'||v==='civic'||v==='institutional'||v==='apartmentleafy'||v==='campus'){
+   ctx.fillStyle=b.trim;ctx.fillRect(b.x,b.y,b.w,7);const cols=Math.max(3,Math.floor(b.w/(v==='modern'||v==='waterfront'?42:50)));drawWindows(b,cols,Math.max(4,Math.floor(b.h/42)),true);
+   if(v==='modern'||v==='waterfront'||v==='modernmix'){ctx.globalAlpha=.3;ctx.fillStyle='#d7eef2';for(let yy=b.y+28;yy<b.y+b.h-25;yy+=52)ctx.fillRect(b.x+8,yy,b.w-16,2);ctx.globalAlpha=1}
+   if(v==='civic'||v==='institutional'){ctx.fillStyle=b.trim;for(let q=b.x+18;q<b.x+b.w-12;q+=34)ctx.fillRect(q,b.y+b.h-72,7,72)}
+ }else if(v==='romanesque'||v==='church'){
+   ctx.fillStyle='#756e63';ctx.fillRect(b.x,b.y,b.w,b.h);ctx.fillStyle=b.facade;ctx.fillRect(b.x+7,b.y+8,b.w-14,b.h-8);drawWindows(b,Math.max(2,Math.floor(b.w/60)),Math.max(3,Math.floor(b.h/58)),false);
+   if(v==='church'){ctx.fillStyle=b.trim;ctx.beginPath();ctx.moveTo(b.x+b.w*.35,b.y);ctx.lineTo(b.x+b.w*.5,b.y-85);ctx.lineTo(b.x+b.w*.65,b.y);ctx.fill();ctx.beginPath();ctx.arc(b.x+b.w*.5,b.y+45,24,Math.PI,0);ctx.fill()}
+ }
+ ctx.restore();
+}
+function drawNeighborhoodLandmark(hood){
+ const b=levelBounds(chapter),g=25*TILE;ctx.save();ctx.globalAlpha=.58;
+ const mainX=b.min+(b.max-b.min)*.72,sideX=b.min+(b.max-b.min)*.28;
+ function theaterBlock(x,label){ctx.fillStyle='#58464b';ctx.fillRect(x-95,g-150,190,150);ctx.fillStyle=hood.accent;ctx.fillRect(x-105,g-112,210,32);ctx.fillStyle='#f2dfb0';ctx.font='bold 14px monospace';ctx.textAlign='center';ctx.fillText(label,x,g-91);ctx.textAlign='left'}
+ function townCircle(x){ctx.fillStyle='#9f9c92';ctx.fillRect(x-7,g-95,14,95);ctx.beginPath();ctx.arc(x,g-102,18,0,Math.PI*2);ctx.fill();ctx.fillRect(x-52,g-18,104,18)}
+ function drawOne(kind,x,small=false){
+  const scale=small?.72:1;
+  ctx.save();ctx.translate(x*(1-scale),g*(1-scale));ctx.scale(scale,scale);
+  if(kind==='capitol'){ctx.fillStyle='#d8d4c8';ctx.fillRect(x-70,g-180,140,180);ctx.beginPath();ctx.arc(x,g-190,52,Math.PI,0);ctx.fill();ctx.fillRect(x-5,g-270,10,46);ctx.beginPath();ctx.moveTo(x-22,g-224);ctx.lineTo(x,g-254);ctx.lineTo(x+22,g-224);ctx.fill()}
+  else if(kind==='arch'){ctx.strokeStyle='#b63838';ctx.lineWidth=13;ctx.beginPath();ctx.moveTo(x-72,g-15);ctx.lineTo(x-72,g-112);ctx.quadraticCurveTo(x,g-170,x+72,g-112);ctx.lineTo(x+72,g-15);ctx.stroke();ctx.fillStyle='#c9a046';ctx.fillRect(x-58,g-122,116,18)}
+  else if(kind==='kennedy'){ctx.fillStyle='#c9c5b9';ctx.fillRect(x-110,g-150,220,150);ctx.fillStyle='#9ea6ab';for(let q=-90;q<=90;q+=24)ctx.fillRect(x+q,g-130,10,100)}
+  else if(kind==='canal'){ctx.fillStyle='#67594c';ctx.fillRect(x-125,g-92,250,92);ctx.fillStyle='#486b74';ctx.fillRect(x-125,g-22,250,22);ctx.strokeStyle='#b9aa8b';ctx.lineWidth=4;for(let q=-110;q<110;q+=28){ctx.beginPath();ctx.moveTo(x+q,g-92);ctx.lineTo(x+q,g-25);ctx.stroke()}}
+  else if(kind==='fountain'||kind==='statue'){townCircle(x)}
+  else if(kind==='theater'||kind==='jazz'||kind==='atlas'||kind==='uptown'||kind==='tivoli'){theaterBlock(x,kind==='jazz'?'LIVE JAZZ':kind.toUpperCase())}
+  else if(kind==='market'){ctx.fillStyle='#d9d6cc';ctx.fillRect(x-105,g-105,210,105);ctx.fillStyle='#6d7780';ctx.font='bold 18px monospace';ctx.fillText('UNION MARKET',x-76,g-52)}
+  else if(kind==='ballpark'){ctx.strokeStyle='#b9c2c7';ctx.lineWidth=6;for(let q=-90;q<=90;q+=45){ctx.beginPath();ctx.moveTo(x+q,g-20);ctx.lineTo(x+q,g-170);ctx.stroke();ctx.beginPath();ctx.moveTo(x+q-18,g-165);ctx.lineTo(x+q+18,g-165);ctx.stroke()}ctx.fillStyle='#5a6b72';ctx.fillRect(x-112,g-22,224,12)}
+  else if(kind==='marina'){ctx.strokeStyle='#c7ccca';ctx.lineWidth=3;for(let q=-100;q<=100;q+=35){ctx.beginPath();ctx.moveTo(x+q,g-8);ctx.lineTo(x+q,g-145-(q%3)*12);ctx.stroke()}ctx.fillStyle='#557b86';ctx.fillRect(x-125,g-25,250,25)}
+  else if(kind==='mural'){ctx.fillStyle='#685258';ctx.fillRect(x-95,g-135,190,135);ctx.fillStyle=hood.accent;ctx.globalAlpha=.45;ctx.beginPath();ctx.arc(x-30,g-74,42,0,Math.PI*2);ctx.fill();ctx.fillRect(x+12,g-112,48,78);ctx.globalAlpha=.58}
+  else if(kind==='carnegie'){ctx.fillStyle='#b5ad9d';ctx.fillRect(x-95,g-125,190,125);ctx.beginPath();ctx.arc(x,g-128,48,Math.PI,0);ctx.fill();ctx.fillStyle='#77746e';for(let q=-65;q<=65;q+=26)ctx.fillRect(x+q,g-94,8,94)}
+  else if(kind==='bridge'){ctx.strokeStyle='#858b8b';ctx.lineWidth=9;ctx.beginPath();ctx.moveTo(x-125,g-80);ctx.quadraticCurveTo(x,g-180,x+125,g-80);ctx.stroke();for(let q=-90;q<=90;q+=45){ctx.beginPath();ctx.moveTo(x+q,g-95);ctx.lineTo(x+q,g-20);ctx.stroke()}}
+  else if(kind==='campus'){ctx.fillStyle='#a29783';ctx.fillRect(x-100,g-125,200,125);ctx.fillStyle='#d7d0c1';for(let q=-70;q<=70;q+=35)ctx.fillRect(x+q,g-95,12,95);ctx.beginPath();ctx.moveTo(x-35,g-125);ctx.lineTo(x,g-160);ctx.lineTo(x+35,g-125);ctx.fill()}
+  else if(kind==='basilica'){ctx.fillStyle='#9a8b76';ctx.fillRect(x-105,g-135,210,135);ctx.beginPath();ctx.arc(x,g-150,55,Math.PI,0);ctx.fill();ctx.fillRect(x-5,g-230,10,65);ctx.fillStyle='#c5b79e';ctx.beginPath();ctx.arc(x,g-165,35,Math.PI,0);ctx.fill()}
+  ctx.restore();
+ }
+ drawOne(hood.landmark,mainX,false);
+ if(hood.landmark==='capitol') drawOne('statue',sideX,true);
+ else if(hood.landmark==='arch') drawOne('market',sideX,true);
+ else if(hood.landmark==='kennedy') drawOne('bridge',sideX,true);
+ else if(hood.landmark==='canal') drawOne('mural',sideX,true);
+ else if(hood.landmark==='fountain') drawOne('statue',sideX,true);
+ else if(hood.landmark==='theater') drawOne('mural',sideX,true);
+ else if(hood.landmark==='jazz') drawOne('theater',sideX,true);
+ else if(hood.landmark==='market') drawOne('bridge',sideX,true);
+ else if(hood.landmark==='ballpark') drawOne('marina',sideX,true);
+ else if(hood.landmark==='marina') drawOne('ballpark',sideX,true);
+ else if(hood.landmark==='mural') drawOne('theater',sideX,true);
+ else if(hood.landmark==='tivoli') drawOne('mural',sideX,true);
+ else if(hood.landmark==='statue') drawOne('fountain',sideX,true);
+ else if(hood.landmark==='uptown') drawOne('bridge',sideX,true);
+ else if(hood.landmark==='carnegie') drawOne('arch',sideX,true);
+ else if(hood.landmark==='bridge') drawOne('uptown',sideX,true);
+ else if(hood.landmark==='atlas') drawOne('theater',sideX,true);
+ else if(hood.landmark==='campus') drawOne('statue',sideX,true);
+ else if(hood.landmark==='basilica') drawOne('campus',sideX,true);
+ ctx.restore();
+}
+function drawNeighborhoodStreet(){
+ const hood=neighborhoods[chapter],b=levelBounds(chapter),g=25*TILE,w=b.max-b.min;
+ ctx.save();
+ // concrete sidewalk/curb remains the walkable visual surface across every map.
+ ctx.fillStyle='#a4a5a5';ctx.fillRect(b.min,g,w,18);ctx.fillStyle='#c0c1c0';ctx.fillRect(b.min,g,w,3);ctx.fillStyle='#686b6d';ctx.fillRect(b.min,g+18,w,4);
+ for(let xx=b.min+20;xx<b.max;xx+=72){ctx.fillStyle='#8f9192';ctx.fillRect(xx,g+2,1,15)}
+ // neighborhood-specific paving + street character
+ if(hood.street==='historic'){ctx.globalAlpha=.45;ctx.fillStyle='#8f5b4e';for(let xx=b.min;xx<b.max;xx+=22)ctx.fillRect(xx,g+5,18,3);ctx.globalAlpha=1}
+ if(hood.street==='circle'){ctx.globalAlpha=.28;ctx.fillStyle='#c8cabf';for(let xx=b.min+50;xx<b.max;xx+=230){ctx.beginPath();ctx.arc(xx,g+78,38,0,Math.PI*2);ctx.fill()}ctx.globalAlpha=1}
+ if(hood.street==='campus'||hood.street==='institutional'){ctx.fillStyle='#c5bfaf';for(let xx=b.min+30;xx<b.max;xx+=110)ctx.fillRect(xx,g+24,64,6)}
+ if(hood.street==='bike'||hood.street==='riverbike'){ctx.globalAlpha=.65;ctx.fillStyle='#4f9d68';ctx.fillRect(b.min,g+56,w,26);ctx.fillStyle='#d6ded4';for(let xx=b.min+60;xx<b.max;xx+=160)ctx.fillRect(xx,g+68,48,3);ctx.globalAlpha=1}
+ if(hood.street==='streetcar'){ctx.strokeStyle='#b9b6ad';ctx.lineWidth=3;for(const yy of [g+62,g+88]){ctx.beginPath();ctx.moveTo(b.min,yy);ctx.lineTo(b.max,yy);ctx.stroke()}for(let xx=b.min;xx<b.max;xx+=42){ctx.fillStyle='#696867';ctx.fillRect(xx,g+58,3,34)}ctx.strokeStyle='#878885';ctx.lineWidth=2;for(let xx=b.min+55;xx<b.max;xx+=190){ctx.beginPath();ctx.moveTo(xx,g-110);ctx.lineTo(xx,g+55);ctx.stroke();ctx.beginPath();ctx.moveTo(xx,g-110);ctx.lineTo(xx+118,g-110);ctx.stroke()}}
+ if(hood.street==='waterfront'||hood.street==='riverbike'){ctx.fillStyle='#4c7380';ctx.globalAlpha=.32;ctx.fillRect(b.min,g+125,w,90);ctx.globalAlpha=1;ctx.fillStyle='#9ea08d';for(let xx=b.min+60;xx<b.max;xx+=170)ctx.fillRect(xx,g+114,88,6)}
+ if(hood.street==='nightlife'||hood.street==='arts'||hood.street==='jazz'){for(let xx=b.min+130;xx<b.max;xx+=260){ctx.fillStyle='#2c2e34';ctx.fillRect(xx,g-88,6,88);ctx.fillStyle='#efe3a0';ctx.beginPath();ctx.arc(xx+3,g-94,8,0,Math.PI*2);ctx.fill()}}
+ if(hood.street==='dense'||hood.street==='downtown'){for(let xx=b.min+85;xx<b.max;xx+=280){ctx.fillStyle='#8e918f';ctx.fillRect(xx,g+28,40,7);ctx.fillRect(xx+7,g+16,8,12);ctx.fillRect(xx+25,g+16,8,12)}}
+ if(hood.street==='residential'||hood.street==='leafy'){for(let xx=b.min+95;xx<b.max;xx+=260){ctx.fillStyle='#a9966f';ctx.fillRect(xx,g+22,34,11);ctx.fillStyle='#6b8a58';ctx.fillRect(xx+3,g+13,28,10)}}
+ // Tree canopy is especially important in the residential Northwest and rowhouse districts.
+ const spacing=Math.max(210,560-hood.trees*55);for(let xx=b.min+150;xx<b.max-80;xx+=spacing){if(((xx/TILE|0)+chapter)%3!==0||hood.trees>=4)drawTree(xx,g,hood.trees>=4?1:0.82)}
+ ctx.restore();
+}
+function drawCity(){
+ const hood=neighborhoods[chapter];drawNeighborhoodLandmark(hood);
+ for(const b of buildings){if(b.x+b.w<camX-120||b.x>camX+VIEW.w+120||b.level!==chapter)continue;drawBuilding(b,hood)}
+ for(const d of wallDecals){if(d.x<camX-80||d.x>camX+VIEW.w+80||d.level!==chapter)continue;ctx.save();ctx.translate(d.x,d.y);ctx.rotate(d.rot);ctx.shadowColor='#0005';ctx.shadowBlur=2;ctx.fillStyle='#d9c79e';ctx.fillRect(-2,-12,72,22);ctx.shadowBlur=0;ctx.fillStyle='#2f2730';ctx.font='bold 8px monospace';ctx.fillText(d.text,3,3);ctx.fillStyle='#aa916f';ctx.fillRect(3,7,56,1);ctx.restore()}
+ for(const f of flags)if(f.level===chapter&&f.x+f.w>camX-100&&f.x-f.w<camX+VIEW.w+100&&f.y<surfaceYAt(f.x)-245)drawFlag(f);
+}
+function drawFlyer(f){
+ const t=performance.now()/420+f.phase;const drift=Math.sin(t*.8)*f.drift;const x=f.x+drift,y=f.y+Math.sin(t*1.2)*7;const safeY=Math.min(y,surfaceYAt(x)-122-f.h);
+ ctx.save();ctx.translate(x,safeY);ctx.rotate(Math.sin(t)*.035);ctx.shadowColor='#0006';ctx.shadowBlur=6;ctx.shadowOffsetX=3;ctx.shadowOffsetY=5;ctx.fillStyle='#eee3c7';ctx.fillRect(0,0,f.w,f.h);ctx.shadowBlur=0;ctx.shadowOffsetX=0;ctx.shadowOffsetY=0;ctx.strokeStyle='#51463e';ctx.lineWidth=2;ctx.strokeRect(1,1,f.w-2,f.h-2);ctx.fillStyle='#31272e';ctx.font='bold 11px monospace';ctx.fillText(f.head,8,15);ctx.fillStyle='#53464a';ctx.font='bold 8px monospace';f.lines.forEach((line,i)=>ctx.fillText(line.slice(0,32),8,31+i*12));ctx.fillStyle='#8a7b69';ctx.font='7px monospace';ctx.fillText(f.stamp,8,f.h-8);ctx.globalAlpha=.2;ctx.strokeStyle='#7d6c58';ctx.beginPath();ctx.moveTo(f.w*.18,3);ctx.lineTo(f.w*.23,f.h-3);ctx.moveTo(f.w*.7,2);ctx.lineTo(f.w*.65,f.h-4);ctx.stroke();ctx.globalAlpha=1;ctx.fillStyle='#d3c2a0';ctx.beginPath();ctx.moveTo(f.w-18,0);ctx.lineTo(f.w,0);ctx.lineTo(f.w,f.h-18);ctx.closePath();ctx.fill();ctx.restore();
+}
+function drawFlyers(){for(const f of flyers){if(f.level!==chapter)continue;if(f.x+f.w<camX-120||f.x>camX+VIEW.w+120)continue;if(f.y<camY-140||f.y>camY+VIEW.h+80)continue;drawFlyer(f);}}
+function loop(now){const dt=Math.min(40,now-last);last=now;update(dt);draw();clearPressed();requestAnimationFrame(loop)}
+requestAnimationFrame(loop);
+</script>
+</body></html>

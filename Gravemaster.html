@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>GRAVEMASTER — Ashes of Hades</title>
+<style>
+:root{background:#08070a;color:#e9e3d5;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07070a}
+body{display:flex;align-items:center;justify-content:center}
+#wrap{position:relative;width:min(100vw,1180px);padding:10px}
+#game{display:block;width:100%;height:auto;aspect-ratio:16/9;image-rendering:pixelated;image-rendering:crisp-edges;background:#111;cursor:none}
+#hud{position:absolute;left:16px;right:16px;top:16px;display:flex;gap:8px;justify-content:space-between;pointer-events:none;font-size:11px;text-shadow:2px 2px #000;z-index:2}
+.panel{background:rgba(7,6,9,.78);border:1px solid rgba(235,227,213,.22);padding:7px 9px;box-shadow:0 0 0 2px rgba(0,0,0,.28);backdrop-filter:blur(2px)}
+#toast{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);width:min(90%,800px);text-align:center;opacity:0;transition:opacity .18s;pointer-events:none;font-size:11px;z-index:4}
+#toast.show{opacity:1}
+#hint{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:10px;color:#aaa;white-space:nowrap;text-shadow:2px 2px #000;pointer-events:none;z-index:2}
+#menu{position:absolute;inset:10px;display:flex;align-items:center;justify-content:center;background:rgba(4,3,6,.68);z-index:8}
+#menu.hidden{display:none}
+#deathScreen{position:absolute;inset:10px;display:flex;align-items:center;justify-content:center;background:rgba(4,3,6,.82);z-index:9}
+#deathScreen[hidden]{display:none !important}
+.death-card{width:min(560px,92%);background:#0e0c12;border:2px solid #6d535f;box-shadow:0 0 0 4px #060508,0 16px 80px #000;padding:28px;text-align:center}
+.death-card h2{margin:0 0 10px;color:#d24a45;font-size:22px;letter-spacing:3px}
+.death-card p{margin:8px auto 16px;max-width:460px}
+.card{width:min(820px,92%);max-height:91%;overflow:auto;background:#0e0c12;border:2px solid #6d535f;box-shadow:0 0 0 4px #060508,0 14px 80px #000;padding:28px}
+h1{margin:0 0 6px;font-size:clamp(34px,7vw,78px);letter-spacing:4px;color:#f0e6d6;text-shadow:5px 5px #331a21}
+h2{margin:8px 0 14px;font-size:16px;color:#d24a45}
+p{line-height:1.52;color:#c4bcb2;font-size:12px}
+button{font:inherit;color:#eee7da;background:#211920;border:1px solid #86616c;padding:10px 14px;cursor:pointer;margin:5px 6px 0 0}
+button:hover{background:#34232b}
+.admin-panel{position:absolute;inset:10px;display:flex;align-items:center;justify-content:center;background:rgba(4,3,6,.88);z-index:10}
+.admin-panel[hidden]{display:none !important}
+.admin-card{width:min(520px,92%);background:#0d0b10;border:2px solid #7b5965;box-shadow:0 0 0 4px #040306,0 18px 90px #000;padding:22px}
+.admin-card h3{margin:0 0 12px;color:#e7d9c2;letter-spacing:2px}
+.admin-row{display:flex;gap:8px;margin:8px 0;align-items:center}
+.admin-row label{width:88px;color:#9e9590;font-size:11px}
+.admin-row input{flex:1;background:#19151b;color:#eee;border:1px solid #5b4650;padding:8px;font:inherit}
+.admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.admin-grid button{margin:0}
+.admin-status{min-height:17px;color:#d7ad5b;font-size:10px;margin-top:8px}
+#tip{position:absolute;left:50%;top:78px;transform:translateX(-50%);max-width:min(92%,650px);padding:8px 12px;background:rgba(14,10,14,.92);border:1px solid #8a6c57;color:#f0ddbf;font-size:10px;text-align:center;pointer-events:none;opacity:0;z-index:5;transition:opacity .18s}
+#tip.show{opacity:1}
+.small{font-size:10px;color:#8f8982}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:700px){.cols{grid-template-columns:1fr}.card{padding:18px}#hint{font-size:8px}}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="384" height="216" aria-label="Gravemaster game canvas"></canvas>
+<div id="hud">
+  <div class="panel" id="stats">HP 6/6 · FEAR 0/100</div>
+  <div class="panel" id="stage">LEVEL 1 · GATE OF HADES</div>
+  <div class="panel" id="inv">RAG 0 · BTL 0 · FUEL 0 · MOLOTOV 0 · DASH RDY</div>
+</div>
+<div id="toast" class="panel"></div>
+<div id="tip"></div>
+<div id="hint">WASD move · Mouse aim + click throw · E search / craft · F melee · SPACE dash · L lore · ESC pause</div>
+<div id="menu">
+  <div class="card" id="menuCard">
+    <h1>GRAVEMASTER</h1>
+    <h2>ASHES OF HADES</h2>
+    <p>A boy is taken into the kingdom of the dead. A fallen angel calling himself Satan promises to send him home if he can “prove his worth.” The demons guard the descent, and every victory reveals another fragment of what lies below.</p>
+    <div class="cols">
+      <div>
+        <p><b>The descent:</b> pass through darkness, torment and the places prepared for the dead. What waits at the bottom is not what the voice above promised.</p>
+        <p><b>Provisions:</b> search ruined shelves and sideboards for rags, bottles and fuel. One of each makes one Molotov. Supplies become more plentiful as the descent grows harder.</p>
+      </div>
+      <div>
+        <p><b>Controls</b><br>WASD — move<br>Mouse — aim<br>Left click — throw Molotov<br>E — search / craft<br>SPACE — dash<br>F — melee strike<br>L — lore journal<br>ESC — pause</p>
+      </div>
+    </div>
+    <button id="startBtn">DESCEND</button>
+    <button id="adminBtn">ADMIN LOGON</button>
+  </div>
+</div>
+<div id="deathScreen" hidden>
+  <div class="death-card">
+    <h2>YOU DIED</h2>
+    <p id="deathMessage">The descent has ended here.</p>
+    <button id="replayBtn">REPLAY</button>
+    <button id="deathMenuBtn">MAIN MENU</button>
+  </div>
+</div>
+<div id="adminPanel" class="admin-panel" hidden>
+  <div class="admin-card">
+    <h3>ADMINISTRATION</h3>
+    <div class="admin-status" id="adminStatus"></div>
+    <button id="adminClose">CLOSE</button>
+    <div id="adminControls">
+      <div class="admin-grid">
+        <button id="skipNext">SKIP LEVEL +1</button>
+        <button id="skipFinal">SKIP TO FINAL</button>
+        <button id="godToggle">DAMAGE: ON</button>
+        <button id="mollyToggle">MOLOTOVS: NORMAL</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+const C=document.getElementById('game'),ctx=C.getContext('2d');ctx.imageSmoothingEnabled=false;
+const W=C.width,H=C.height;
+const MELEE_RANGE=31;
+const COLORS={bg:'#0b090e',floor:'#17141a',floor2:'#201a21',stone:'#392c32',stone2:'#594249',bone:'#d4c4a9',ash:'#817776',blood:'#6f1f29',ember:'#ffb13b',fire:'#ef4e32',player:'#e0d4c0',hair:'#443137',skin:'#ad806b',dark:'#09070b',text:'#eee4d2',gold:'#d7ad5b',demon:'#6d2736',demon2:'#b94840',specter:'#6e678d',poison:'#789153',purple:'#8b5d89',angel:'#7c725f'};
+function hash(n){n=Math.imul(n^(n>>>16),0x45d9f3b);n=Math.imul(n^(n>>>16),0x45d9f3b);return(n^(n>>>16))>>>0}
+function rand01(seed){return hash(seed)/4294967296}
+function irand(seed,a,b){return a+Math.floor(rand01(seed)*(b-a+1))}
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+function dist(ax,ay,bx,by){return Math.hypot(ax-bx,ay-by)}
+function angle(ax,ay,bx,by){return Math.atan2(by-ay,bx-ax)}
+function rectCircleHit(rx,ry,rw,rh,cx,cy,cr){const nx=clamp(cx,rx,rx+rw),ny=clamp(cy,ry,ry+rh);return dist(nx,ny,cx,cy)<cr}
+function seededChoice(seed,arr){return arr[hash(seed)%arr.length]}
+
+const LEVELS=[
+ {name:'GATE OF HADES',sub:'The Threshold of the Dead',lore:'Hades is portrayed as the temporary realm/condition of the departed, not identical to Gehenna.',count:2,types:['dreg','wailer'],supply:5,speed:1,shot:0.0,theme:'stone'},
+ {name:'DARK HADES',sub:'The Left-Hand Darkness',lore:'The game depicts a region of darkness and grief, reflecting traditional Orthodox imagery of the unrighteous in Hades.',count:4,types:['dreg','hound','wailer'],supply:7,speed:1.05,shot:.15,theme:'dark'},
+ {name:'PLACE OF TORMENT',sub:'Lamentation Without Peace',lore:'The condition of sorrow is represented by memory, isolation and accusation rather than a cartoon furnace.',count:6,types:['dreg','hound','wailer'],supply:9,speed:1.12,shot:.3,theme:'lament'},
+ {name:'THE DEEP CHASM',sub:'Separated by an Uncrossable Divide',lore:'The traditional image of a great gulf separates the conditions of the dead; the game turns that image into moving terrain and enemy control.',count:8,types:['hound','wailer','dreg'],supply:11,speed:1.2,shot:.48,theme:'chasm'},
+ {name:'BROKEN GATES',sub:'The Memory of Christ’s Descent',lore:'Orthodox teaching celebrates Christ’s descent into Hades and the breaking of death’s power. This stage is deliberately a ruined, defeated prison.',count:10,types:['dreg','hound','wailer','charger'],supply:13,speed:1.28,shot:.62,theme:'gates'},
+ {name:'FORETASTE OF GEHENNA',sub:'The Fire That the Demons Cannot Own',lore:'The fire here is spoken of as the foretaste of judgment: a fire no demon commands, and a shadow of what lies beyond the final judgment.',count:12,types:['hound','wailer','charger','pyre'],supply:15,speed:1.38,shot:.76,theme:'ember'},
+ {name:'BEFORE THE JUDGMENT',sub:'Every Accusation Laid Bare',lore:'The final judgment belongs to God. Demons may accuse, but they are not the judges and do not decide the soul’s final destiny.',count:14,types:['wailer','charger','pyre','dreg'],supply:18,speed:1.48,shot:.92,theme:'court'},
+ {name:'THE FALSE THRONE',sub:'At the Edge of the Lie',lore:'Satan is confronted as a fallen creature and adversary, not as God’s equal. His promised bargain was deception from the beginning.',count:16,types:['charger','pyre','wailer'],supply:22,speed:1.58,shot:1.15,theme:'throne'}
+];
+const LORE=[
+ {title:'PROLOGUE — THE VOICE',text:'The voice calls itself Satan and offers the boy a way back to the world of the living. It speaks like a ruler, but the boy cannot yet tell whether the voice is telling the truth.'},
+ {title:'I — HADES',text:'The boy begins to understand that Hades is the realm of the departed, not simply another name for the final Gehenna. The darkness around him is a condition of the dead awaiting what comes after judgment.'},
+ {title:'II — REMEMBERED LIGHT',text:'Traditional Orthodox imagery distinguishes the conditions of the departed: consolation and light for some, grief and darkness for others. The game turns those images into hostile places without claiming that the underworld is mapped this way in doctrine.'},
+ {title:'III — THE GREAT GULF',text:'The chasm marks separation. The boy sees that the dead cannot simply walk from one condition to another because the separation is deeper than stone or distance.'},
+ {title:'IV — BROKEN GATES',text:'The ruined gates echo the Orthodox proclamation of Christ\'s descent into Hades and the breaking of death\'s power. Whatever claims the prison made about itself, it could not keep the conqueror of death forever shut outside.'},
+ {title:'V — FIRE',text:'The fire here is not the final state itself. It foreshadows judgment. The demons imitate the language of flame and terror, hoping the boy will mistake their spectacle for the authority of God.'},
+ {title:'VI — THE ACCUSATION',text:'The demons accuse, tempt and terrify. They can wound, but their words are not the final judgment. That belongs to God, and the boy begins to understand that the adversary has been speaking far beyond his authority.'},
+ {title:'VII — THE BARGAIN',text:'The promise that began the descent finally comes back to the boy. He has done everything Satan demanded. Now the question is whether the one who made the bargain can actually keep it.'}
+];
+
+const LEVEL_DIALOGUE={
+ 1:[
+  ['SATAN','You have crossed into the darker country now. The dead keep little company with the living here.'],
+  ['BOY','Then why can I still hear you?'],
+  ['SATAN','Because a voice can travel farther than a body. Keep walking.'],
+  ['BOY','I will find my way out.']
+ ],
+ 2:[
+  ['SATAN','You have seen sorrow. Do not mistake sorrow for the whole of this place.'],
+  ['BOY','Everything here wants me to give up.'],
+  ['SATAN','That is because giving up is the easiest road downward.'],
+  ['BOY','Then I will take the harder one.']
+ ],
+ 3:[
+  ['SATAN','Look at the gulf. Some distances are not crossed by strength.'],
+  ['BOY','You said there was a way home.'],
+  ['SATAN','There is a way. Whether you can reach it is another matter.'],
+  ['BOY','I am still moving.']
+ ],
+ 4:[
+  ['SATAN','These gates remember when death believed itself unshakable.'],
+  ['BOY','Something broke here.'],
+  ['SATAN','Yes. And broken things can still cut the hand that touches them.'],
+  ['BOY','Then I will be careful.']
+ ],
+ 5:[
+  ['SATAN','Now you enter the country of fire.'],
+  ['BOY','The flames do not feel like yours.'],
+  ['SATAN','Not every flame belongs to the hand that lights it.'],
+  ['BOY','Then I will not kneel before it.']
+ ],
+ 6:[
+  ['SATAN','Every step gives the voices another chance to name you.'],
+  ['BOY','They call me guilty.'],
+  ['SATAN','Voices are easy to multiply. Truth is harder.'],
+  ['BOY','Then let the truth find me.']
+ ],
+ 7:[
+  ['SATAN','This is the last hall before my throne.'],
+  ['BOY','You said I would go home when this was finished.'],
+  ['SATAN','You have come remarkably far for someone who began with so little.'],
+  ['BOY','I have kept my side of the bargain.']
+ ]
+};
+
+let state='menu',paused=false,stage=0,roomSeedIndex=0,room=null,player=null,particles=[],projectiles=[],flames=[],floatingText=[],lore=[],totalKills=0,last=performance.now(),toastTimer=0;
+let keys=new Set(),mouse={x:192,y:108,down:false};
+let cutscene={active:false,lines:[],i:0,onDone:null,kind:'',transition:'in',transitionT:0,transitionDur:.72,pendingDone:null};
+let introSeen=false;
+let admin={loggedIn:true,damageOff:false,unlimitedMolotovs:false};
+let tipTimer=0;let tipText='';
+let postBoss={active:false,t:0,ropeY:-18,grabbed:false};
+let transition={active:false,phase:'in',t:0,dur:.72,pending:null};
+
+function save(){localStorage.setItem('gravemaster-save',JSON.stringify({lore,totalKills,stage,worldComplete:state==='ending'}))}
+function load(){try{const s=JSON.parse(localStorage.getItem('gravemaster-save')||'null');if(s){lore=Array.isArray(s.lore)?s.lore:[];totalKills=s.totalKills||0;}}catch(e){}}
+load();
+function toast(msg,ms=1800){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');toastTimer=ms}
+function createPlayer(){return{x:192,y:112,r:5,hp:6,maxHp:6,fear:0,rags:0,bottles:0,fuel:0,molotovs:0,dashCd:0,dashTimer:0,invuln:0,throwCd:0,meleeCd:0,meleeTimer:0,meleeHit:false,anim:0,step:0}}
+function stageSeed(i){return 0xA51973^Math.imul(i+1,0x9E3779B1)}
+function generateRoom(i){
+ const L=LEVELS[i],seed=stageSeed(i),r={seed,level:i,theme:L.theme,walls:[],obstacles:[],furniture:[],items:[],enemies:[],cleared:false,exitOpen:false,started:false};
+ const add=(x,y,w,h,t='wall')=>r.walls.push({x,y,w,h,t});
+ add(0,0,W,7);add(0,H-7,W,7);add(0,0,7,H);add(W-7,0,7,H);
+ // Door only at bottom. For a room-as-level structure, the exit opens after clear.
+ for(let i2=0;i2<5+Math.min(6,i);i2++){
+   const w=irand(seed+i2*31,14,32),h=irand(seed+i2*41,10,24),x=irand(seed+i2*71,18,W-w-18),y=irand(seed+i2*91,26,H-h-22);
+   if(dist(x+w/2,y+h/2,192,112)<34)continue;
+   if(r.obstacles.some(o=>rectCircleHit(o.x,o.y,o.w,o.h,x+w/2,y+h/2,10)))continue;
+   r.obstacles.push({x,y,w,h,type:i2%4,seed:seed+i2*19});
+ }
+ const fcount=4+Math.min(6,Math.floor(i*.8));
+ for(let j=0;j<fcount;j++){
+   let x=0,y=0,tries=0;
+   do{ x=irand(seed+400+j*17,18,W-36);y=irand(seed+500+j*29,25,H-30);tries++ }
+   while((dist(x,y,192,112)<34||r.obstacles.some(o=>rectCircleHit(o.x,o.y,o.w,o.h,x,y,11))||r.furniture.some(f=>dist(f.x,f.y,x,y)<14))&&tries<80);
+   r.furniture.push({x,y,w:irand(seed+600+j*7,14,24),h:irand(seed+700+j*11,9,15),type:j%2?'sideboard':'shelf',seed:seed+j*313,searched:false,shake:0});
+ }
+ // Guarantee materials: supply is at least one complete recipe, then scales with danger.
+ const need=1+Math.floor(L.supply/6);
+ const matList=[];for(let z=0;z<need;z++)matList.push('rag','bottle','fuel');
+ // Distribute ingredients; searchable wreckage adds extras.
+ matList.forEach((type,k)=>{
+   let x=0,y=0,tries=0;
+   do{x=irand(seed+900+k*41,14,W-14);y=irand(seed+1000+k*53,18,H-18);tries++}
+   while((dist(x,y,192,112)<26||r.obstacles.some(o=>rectCircleHit(o.x,o.y,o.w,o.h,x,y,5))||r.furniture.some(f=>rectCircleHit(f.x-1,f.y-1,f.w+2,f.h+2,x,y,5)))&&tries<100);
+   r.items.push({x,y,type,bob:rand01(seed+1100+k*7)*Math.PI*2,seed:seed+k*17});
+ });
+ for(let k=0;k<L.supply;k++){
+   const type=seededChoice(seed+1300+k,['rag','bottle','fuel']);
+   let x=irand(seed+1400+k*17,14,W-14),y=irand(seed+1500+k*29,20,H-20);
+   if(dist(x,y,192,112)<30){x+=35;y+=20}
+   r.items.push({x:clamp(x,12,W-12),y:clamp(y,12,H-12),type,bob:rand01(seed+1600+k)*Math.PI*2,seed:seed+1700+k});
+ }
+ // L1 is exactly two demons. Later stages progressively scale count and weapon variety.
+ for(let k=0;k<L.count;k++){
+   let x,y,tries=0;
+   do{x=irand(seed+2000+k*31,22,W-22);y=irand(seed+2100+k*37,25,H-22);tries++}
+   while((dist(x,y,192,112)<52||r.obstacles.some(o=>rectCircleHit(o.x,o.y,o.w,o.h,x,y,9)))&&tries<80);
+   const type=seededChoice(seed+2200+k,L.types);r.enemies.push(makeEnemy(type,x,y,i,seed+k*97));
+ }
+ return r;
+}
+function makeEnemy(type,x,y,level,seed){
+ const n=level;
+ const D={
+  dreg:{hp:3+n*.65,spd:18+n*1.3,r:6,dmg:.5,kind:'dreg',touch:1},
+  hound:{hp:2.5+n*.5,spd:29+n*1.8,r:5,dmg:.7,kind:'hound',touch:1},
+  wailer:{hp:4+n*.75,spd:12+n*.9,r:6,dmg:.45,kind:'wailer',shot:2.7-Math.min(1.3,n*.08),touch:1},
+  charger:{hp:6+n*.9,spd:17+n*1.1,r:6,dmg:.9,kind:'charger',charge:0,dir:0,touch:1},
+  pyre:{hp:7+n,spd:9+n*.5,r:6,dmg:.65,kind:'pyre',shot:2.5-Math.min(1.1,n*.08),touch:1}
+ };
+ const d=D[type];return{x,y,...d,maxHp:d.hp,hurt:0,dead:false,phase:rand01(seed)*Math.PI*2,shotTimer:d.shot||1.7,chargeTimer:1.4+rand01(seed+9)*1.5,seed};
+}
+function satanSprite(x,y,s,alpha=1){
+ ctx.save();ctx.translate(x,y);ctx.globalAlpha=alpha;const t=performance.now()/1000;
+ // Satan is rendered as a fallen angelic silhouette, not as a horned red cartoon devil.
+ ctx.fillStyle='#120d15';ctx.beginPath();ctx.moveTo(0,-30*s);ctx.lineTo(-13*s,-17*s);ctx.lineTo(-18*s,15*s);ctx.lineTo(-10*s,30*s);ctx.lineTo(10*s,30*s);ctx.lineTo(18*s,15*s);ctx.lineTo(13*s,-17*s);ctx.closePath();ctx.fill();
+ const wing=(side)=>{ctx.fillStyle='#1d1720';ctx.beginPath();ctx.moveTo(side*7*s,-12*s);ctx.lineTo(side*30*s,-25*s);ctx.lineTo(side*25*s,-10*s);ctx.lineTo(side*38*s,2*s);ctx.lineTo(side*22*s,5*s);ctx.lineTo(side*30*s,20*s);ctx.lineTo(side*11*s,11*s);ctx.closePath();ctx.fill();ctx.fillStyle='#392b34';for(let k=0;k<3;k++)ctx.fillRect(side*(15+k*5)*s,(-7+k*7)*s,side*9*s,1*s)};
+ wing(-1);wing(1);
+ ctx.fillStyle='#6d5860';ctx.fillRect(-7*s,-25*s,14*s,11*s);ctx.fillStyle='#c5b69b';ctx.fillRect(-4*s,-21*s,2*s,2*s);ctx.fillRect(2*s,-21*s,2*s,2*s);ctx.fillStyle='#28171f';ctx.fillRect(-3*s,-15*s,6*s,3*s);
+ ctx.fillStyle='#493742';ctx.fillRect(-10*s,12*s,20*s,4*s);ctx.fillRect(-6*s,16*s,12*s,3*s);
+ ctx.fillStyle='#1d131b';ctx.fillRect(-2*s,-34*s,4*s,7*s);
+ // slight wing motion
+ ctx.globalAlpha=.24+.1*Math.sin(t*2.5);ctx.fillStyle='#d7ad5b';ctx.fillRect(-30*s,27*s,60*s,1*s);ctx.restore();
+}
+
+function resetStage(preserveInventory=true){
+ const old=player;
+ room=generateRoom(stage);room.started=true;
+ const inv=old&&preserveInventory?{rags:old.rags,bottles:old.bottles,fuel:old.fuel,molotovs:old.molotovs}:null;
+ player=createPlayer();
+ if(inv)Object.assign(player,inv);
+ particles=[];projectiles=[];flames=[];floatingText=[];updateHUD()
+}
+function reveal(i,msg=''){if(!lore.includes(i)){lore.push(i);save();toast(`${LORE[i].title}${msg?' — '+msg:''}`,2600)}}
+function startFlameTransition(phase,pending=null){transition={active:true,phase,t:0,dur:.72,pending}}
+function updateTransition(dt){if(!transition.active)return;transition.t+=dt;if(transition.t>=transition.dur){const pending=transition.pending;transition={active:false,phase:'in',t:0,dur:.72,pending:null};if(pending)pending();}}
+function openCutscene(lines,onDone,kind='scene'){state='cutscene';cutscene={active:true,lines,i:0,onDone,kind,transition:'in',transitionT:0,transitionDur:.72,pendingDone:null};startFlameTransition('in')}
+function advanceCutscene(){
+ if(!cutscene.active||transition.active)return;
+ if(cutscene.i<cutscene.lines.length-1){cutscene.i++;return;}
+ const fn=cutscene.onDone;
+ cutscene={active:false,lines:[],i:0,onDone:null,kind:'',transition:'out',transitionT:0,transitionDur:.72,pendingDone:null};
+ startFlameTransition('out',fn);
+}
+function setTip(msg,ms=4200){tipText=msg;tipTimer=ms;const el=document.getElementById('tip');el.textContent=msg;el.classList.add('show')}
+function updateTip(dt){if(tipTimer>0){tipTimer-=dt*1000;if(tipTimer<=0){tipTimer=0;document.getElementById('tip').classList.remove('show')}}}
+function hideDeathScreen(){document.getElementById('deathScreen').hidden=true}
+function showDeathScreen(message='The descent has ended here.'){
+ document.getElementById('deathMessage').textContent=message;
+ document.getElementById('deathScreen').hidden=false;
+}
+function enterGameOver(message){if(state==='gameover')return;state='gameover';paused=false;keys.clear();mouse.down=false;document.getElementById('adminPanel').hidden=true;document.getElementById('menu').classList.add('hidden');showDeathScreen(message)}
+function beginGame(){hideDeathScreen();document.getElementById('adminPanel').hidden=true;document.getElementById('menu').classList.add('hidden');state='cutscene';stage=0;totalKills=0;lore=[];player=createPlayer();resetStage(false);if(admin.unlimitedMolotovs)player.molotovs=99;reveal(0);openCutscene([
+ ['SATAN','I am Satan.'],
+ ['SATAN','You have been taken below the world of the living.'],
+ ['BOY','Why?'],
+ ['SATAN','Because you want to return.'],
+ ['SATAN','Descend. Survive what I place before you.'],
+ ['BOY','And then you will send me home?'],
+ ['SATAN','If you prove yourself.']
+ ],()=>{state='game';toast('LEVEL 1 — GATE OF HADES',1800)},'intro')}
+function finishLevel(){if(room.cleared)return;room.cleared=true;room.exitOpen=true;player.fear=0;
+ if(stage===0){reveal(1);openCutscene([
+   ['SATAN','So. You survived.'],
+   ['BOY','You said I could return.'],
+   ['SATAN','This is just an introduction.'],
+   ['SATAN','There is much farther to descend.']
+ ],()=>{stage=1;resetStage(true);state='game';toast('LEVEL 2 — DARK HADES',1800)});}
+ else if(stage<LEVELS.length-1){const next=stage+1;reveal(Math.min(7,next));openCutscene(LEVEL_DIALOGUE[next],()=>{stage=next;resetStage(true);state='game';toast(`LEVEL ${stage+1} — ${LEVELS[stage].name}`,1800)});}
+ else {reveal(7);openCutscene([
+   ['BOY','I have done everything you asked.'],
+   ['BOY','Send me home.'],
+   ['SATAN','Come nearer.'],
+   ['BOY','You promised.'],
+   ['SATAN','Then let us see what you have earned.']
+ ],()=>{state='satanFight';stage=8;resetFinalBoss();setTip('TIP: SATAN is vulnerable to MELEE. Get close and strike.',5200);toast('THE FALSE THRONE — FINAL ENCOUNTER',2200)},'finalIntro')}
+}
+function resetFinalBoss(){
+ const old=player;const inv=old?{rags:old.rags,bottles:old.bottles,fuel:old.fuel,molotovs:old.molotovs}:null;
+ room=generateFinalRoom();player=createPlayer();player.hp=8;player.maxHp=8;if(inv)Object.assign(player,inv);
+ postBoss={active:false,t:0,ropeY:-18,grabbed:false};
+ particles=[];projectiles=[];flames=[];floatingText=[];updateHUD()
+}
+function generateFinalRoom(){const seed=0x5A7A;return{seed,level:8,theme:'throne',walls:[{x:0,y:0,w:W,h:7},{x:0,y:H-7,w:W,h:7},{x:0,y:0,w:7,h:H},{x:W-7,y:0,w:7,h:H}],obstacles:[{x:72,y:62,w:24,h:13,type:0,seed:9},{x:288,y:62,w:24,h:13,type:0,seed:10}],furniture:[],items:(()=>{const a=[];for(let i=0;i<30;i++){const ty=['rag','bottle','fuel'][i%3];a.push({x:30+(i%8)*46,y:24+Math.floor(i/8)*43,type:ty,bob:rand01(i)*6.28,seed:i})}return a})(),enemies:[makeSatanBoss()],cleared:false,exitOpen:false}}
+function makeSatanBoss(){return{x:192,y:56,r:17,hp:120,maxHp:120,kind:'satan',hurt:0,dead:false,phase:0,shotTimer:.9,tele:2.0,dir:0,distort:0,rebirth:0}}
+
+function craft(){if(admin.unlimitedMolotovs){player.molotovs=99;toast('The satchel feels inexhaustible.',700);updateHUD();return}if(player.rags>0&&player.bottles>0&&player.fuel>0){player.rags--;player.bottles--;player.fuel--;player.molotovs++;toast('Molotov crafted.',900);updateHUD();return}toast('Need 1 RAG + 1 BOTTLE + 1 FUEL.',1100)}
+function nearestFurniture(){let best=null,bd=17;for(const f of room.furniture||[]){if(f.searched)continue;const d=dist(player.x,player.y,f.x+f.w/2,f.y+f.h/2);if(d<bd){best=f;bd=d}}return best}
+function search(){const f=nearestFurniture();if(!f){craft();return}f.searched=true;f.shake=.3;const r=rand01(f.seed+room.seed+stage*91);if(r>.91){player.molotovs++;toast(`${f.type.toUpperCase()}: intact Molotov found.`,1100)}else{const ty=r<.34?'rags':r<.67?'bottles':'fuel';const n=r>.78?2:1;player[ty]+=n;toast(`${f.type.toUpperCase()}: ${n} ${ty.slice(0,-1).toUpperCase()}${n>1?'S':''}.`,1100)}updateHUD()}
+function throwMolotov(tx,ty){if(admin.unlimitedMolotovs)player.molotovs=99;if(player.molotovs<=0){toast('No Molotov. Search wreckage and craft one with E.',900);return}if(player.throwCd>0)return;if(!admin.unlimitedMolotovs)player.molotovs--;player.throwCd=.25;const a=angle(player.x,player.y,tx,ty);projectiles.push({x:player.x,y:player.y,vx:Math.cos(a)*125,vy:Math.sin(a)*125,life:.68,r:3,enemy:false});for(let i=0;i<6;i++)particles.push({x:player.x,y:player.y,vx:(rand01(i+Date.now())-.5)*25,vy:(rand01(i*5+Date.now())-.5)*25,life:.4,kind:'spark'})}
+function melee(){
+ if(player.meleeCd>0)return;
+ player.meleeCd=.42;player.meleeTimer=.16;player.meleeHit=false;
+ const a=angle(player.x,player.y,mouse.x,mouse.y);
+ for(let i=0;i<7;i++)particles.push({x:player.x+Math.cos(a)*((i+1)*2),y:player.y+Math.sin(a)*((i+1)*2),vx:Math.cos(a+(.5-rand01(i+Date.now())))*18,vy:Math.sin(a+(.5-rand01(i+Date.now())))*18,life:.12+.03*i,kind:'slash'});
+ for(const e of room.enemies){
+   if(e.dead)continue;
+   const d=dist(player.x,player.y,e.x,e.y);
+   const da=Math.atan2(e.y-player.y,e.x-player.x);
+   let diff=Math.atan2(Math.sin(da-a),Math.cos(da-a));
+   if(d<MELEE_RANGE+e.r&&Math.abs(diff)<.9){e.hp-=e.kind==='satan'?8.5:1.45;e.hurt=.16;e.meleeFlash=.12;if(e.kind==='satan')setTip('TIP: MELEE does heavy damage to Satan. Stay close and keep striking between his attacks.',1800);}
+ }
+ updateHUD();
+}
+function explode(x,y,big=24){flames.push({x,y,life:3,radius:big});for(const e of room.enemies){if(e.dead)continue;const d=dist(x,y,e.x,e.y);if(d<big+e.r)e.hp-=Math.max(1,Math.round(8*(1-d/(big+e.r))));e.hurt=.12}
+ if(!admin.damageOff&&dist(x,y,player.x,player.y)<big*.85)player.hp-=.35;for(let i=0;i<34;i++)particles.push({x,y,vx:(rand01(i*71+x*11)-.5)*80,vy:(rand01(i*97+y*7)-.5)*80,life:.45+rand01(i+77)*.75,kind:'fire'})}
+function killEnemy(e){e.dead=true;totalKills++;player.fear=clamp(player.fear-6,0,100);revealKillLore();for(let i=0;i<15;i++)particles.push({x:e.x,y:e.y,vx:(rand01(i*9+stage+e.phase)-.5)*55,vy:(rand01(i*17+e.phase)-.5)*55,life:.35+rand01(i+77)*.65,kind:'ash'});}
+function revealKillLore(){if(stage===0)return;const thresholds=[0,1,4,8,12,18,25,34];for(let i=1;i<8;i++){if(totalKills>=thresholds[i])reveal(i)}}
+
+function walkable(x,y,r=5){if(x<11||x>W-11||y<12||y>H-12)return false;for(const o of room.walls||[])if(rectCircleHit(o.x,o.y,o.w,o.h,x,y,r))return false;for(const o of room.obstacles||[])if(rectCircleHit(o.x-1,o.y-1,o.w+2,o.h+2,x,y,r))return false;for(const f of room.furniture||[])if(!f.searched&&rectCircleHit(f.x-1,f.y-1,f.w+2,f.h+2,x,y,r))return false;return true}
+function moveObj(obj,dx,dy,r){const nx=obj.x+dx,ny=obj.y+dy;if(walkable(nx,obj.y,r))obj.x=nx;if(walkable(obj.x,ny,r))obj.y=ny}
+function applyDamage(amount){if(admin.damageOff||player.invuln>0)return;player.hp-=amount;player.invuln=.65;player.fear=clamp(player.fear+12,0,100);}
+
+function update(dt){
+ if(state!=='game'&&state!=='satanFight')return;if(paused||cutscene.active)return;dt=Math.min(.033,dt);updateTip(dt);
+ player.anim+=dt;player.invuln=Math.max(0,player.invuln-dt);player.throwCd=Math.max(0,player.throwCd-dt);player.meleeCd=Math.max(0,player.meleeCd-dt);player.meleeTimer=Math.max(0,player.meleeTimer-dt);player.dashCd=Math.max(0,player.dashCd-dt);player.dashTimer=Math.max(0,player.dashTimer-dt);
+ if(toastTimer>0){toastTimer-=dt*1000;if(toastTimer<=0)document.getElementById('toast').classList.remove('show')}
+ let dx=(keys.has('KeyD')?1:0)-(keys.has('KeyA')?1:0),dy=(keys.has('KeyS')?1:0)-(keys.has('KeyW')?1:0);const m=Math.hypot(dx,dy)||1;dx/=m;dy/=m;
+ if(keys.has('Space')&&player.dashTimer<=0&&player.dashCd<=0){player.dashTimer=.14;player.dashCd=1.15;player.invuln=.25;keys.delete('Space');}
+ const speed=player.dashTimer>0?115:48;moveObj(player,dx*speed*dt,dy*speed*dt,player.r);if(Math.abs(dx)+Math.abs(dy)>0)player.step+=dt*12;
+ // items
+ for(let i=room.items.length-1;i>=0;i--){const it=room.items[i];if(dist(player.x,player.y,it.x,it.y)<9){const key=it.type==='rag'?'rags':it.type==='bottle'?'bottles':'fuel';player[key]++;room.items.splice(i,1);floatingText.push({x:it.x,y:it.y,text:it.type.toUpperCase(),life:1.0})}}
+ // projectiles
+ for(let i=projectiles.length-1;i>=0;i--){const p=projectiles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=20*dt;p.life-=dt;let hitWall=!walkable(p.x,p.y,p.r);if(p.life<=0||p.x<8||p.x>W-8||p.y<8||p.y>H-8||hitWall){if(!p.enemy)explode(clamp(p.x,12,W-12),clamp(p.y,12,H-12),24);projectiles.splice(i,1);continue}if(p.enemy&&dist(p.x,p.y,player.x,player.y)<player.r+p.r){applyDamage(.75);projectiles.splice(i,1)}}
+ // flames
+ for(let i=flames.length-1;i>=0;i--){const f=flames[i];f.life-=dt;if(f.life<=0)flames.splice(i,1)}
+ // enemies
+ for(const e of room.enemies){if(e.dead)continue;updateEnemy(e,dt)}
+ const living=room.enemies.filter(e=>!e.dead).length;
+ if(state==='game'&&living===0&&!room.cleared)finishLevel();
+ if(player.fear>=100){player.fear=55;applyDamage(.8);toast('Panic: the accusation is not the judgment.',1300);}
+ if(player.hp<=0){enterGameOver('The darkness claims the boy.');return}
+ for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.96;p.vy*=.96;p.life-=dt;if(p.life<=0)particles.splice(i,1)}
+ for(let i=floatingText.length-1;i>=0;i--){floatingText[i].y-=8*dt;floatingText[i].life-=dt;if(floatingText[i].life<=0)floatingText.splice(i,1)}
+ updateHUD();
+}
+function updateEnemy(e,dt){e.phase+=dt;e.hurt=Math.max(0,e.hurt-dt);const d=dist(e.x,e.y,player.x,player.y),a=angle(e.x,e.y,player.x,player.y);
+ if(e.kind==='dreg'){moveObj(e,Math.cos(a)*e.spd*dt,Math.sin(a)*e.spd*dt,e.r)}
+ else if(e.kind==='hound'){moveObj(e,Math.cos(a+Math.sin(e.phase*6)*.25)*e.spd*dt,Math.sin(a+Math.sin(e.phase*6)*.25)*e.spd*dt,e.r)}
+ else if(e.kind==='wailer'){if(d>65)moveObj(e,Math.cos(a)*e.spd*dt,Math.sin(a)*e.spd*dt,e.r);e.shotTimer-=dt;if(e.shotTimer<=0&&d<175){e.shotTimer=e.shot;for(let q=-1;q<=1;q++){const aa=a+q*.12;projectiles.push({x:e.x,y:e.y,vx:Math.cos(aa)*36,vy:Math.sin(aa)*36,life:4,r:2,enemy:true})}}}
+ else if(e.kind==='charger'){e.chargeTimer-=dt;if(e.chargeTimer<=0){e.chargeTimer=1.8;e.dir=a;for(let k=0;k<3;k++)particles.push({x:e.x,y:e.y,vx:(rand01(k+e.seed)-.5)*18,vy:(rand01(k+e.seed+2)-.5)*18,life:.5,kind:'ash'})}const aa=e.chargeTimer<.55?e.dir:a;moveObj(e,Math.cos(aa)*e.spd*(e.chargeTimer<.55?2.6:1)*dt,Math.sin(aa)*e.spd*(e.chargeTimer<.55?2.6:1)*dt,e.r)}
+ else if(e.kind==='pyre'){if(d>82)moveObj(e,Math.cos(a)*e.spd*dt,Math.sin(a)*e.spd*dt,e.r);e.shotTimer-=dt;if(e.shotTimer<=0&&d<170){e.shotTimer=e.shot;const base=a;for(let q=-2;q<=2;q++){const aa=base+q*.13;projectiles.push({x:e.x,y:e.y,vx:Math.cos(aa)*28,vy:Math.sin(aa)*28,life:4.3,r:2,enemy:true})}}}
+ if(dist(e.x,e.y,player.x,player.y)<e.r+player.r+2)applyDamage(e.dmg);
+ if(e.hp<=0)killEnemy(e);
+}
+
+function updateSatan(dt){
+ if(state!=='satanFight'||paused||cutscene.active)return;dt=Math.min(.033,dt);updateTip(dt);player.anim+=dt;player.invuln=Math.max(0,player.invuln-dt);player.throwCd=Math.max(0,player.throwCd-dt);player.meleeCd=Math.max(0,player.meleeCd-dt);player.meleeTimer=Math.max(0,player.meleeTimer-dt);player.dashCd=Math.max(0,player.dashCd-dt);player.dashTimer=Math.max(0,player.dashTimer-dt);
+ let dx=(keys.has('KeyD')?1:0)-(keys.has('KeyA')?1:0),dy=(keys.has('KeyS')?1:0)-(keys.has('KeyW')?1:0);const m=Math.hypot(dx,dy)||1;dx/=m;dy/=m;
+ if(keys.has('Space')&&player.dashTimer<=0&&player.dashCd<=0){player.dashTimer=.16;player.dashCd=1.15;player.invuln=.3;keys.delete('Space')}
+ moveObj(player,dx*(player.dashTimer?115:50)*dt,dy*(player.dashTimer?115:50)*dt,player.r);
+ if(keys.has('Mouse0'))throwMolotov(mouse.x,mouse.y);
+ const s=room.enemies[0];s.phase+=dt;s.hurt=Math.max(0,s.hurt-dt);const a=angle(s.x,s.y,player.x,player.y),d=dist(s.x,s.y,player.x,player.y);s.shotTimer-=dt;s.tele-=dt;
+ if(d>72)moveObj(s,Math.cos(a)*18*dt,Math.sin(a)*18*dt,s.r);
+ if(s.tele<=0){s.tele=2.7;for(let k=0;k<7;k++){const aa=(Math.PI*2*k/7)+s.phase*.35;projectiles.push({x:s.x,y:s.y,vx:Math.cos(aa)*(34+k*1.8),vy:Math.sin(aa)*(34+k*1.8),life:4.5,r:3,enemy:true})}}
+ if(s.shotTimer<=0&&d<190){s.shotTimer=1.35;const aa=a;for(let k=-2;k<=2;k++){const q=aa+k*.14;projectiles.push({x:s.x,y:s.y,vx:Math.cos(q)*47,vy:Math.sin(q)*47,life:4,r:2,enemy:true})}}
+ if(d<s.r+player.r+3)applyDamage(1.15);
+ if(s.hp<=0&&!postBoss.active){s.dead=true;postBoss.active=true;postBoss.t=0;postBoss.ropeY=-18;postBoss.grabbed=false;projectiles=[];flames=[];setTip('The thing you fought is broken. Do not stop moving.',2600);return}
+ if(postBoss.active){
+   postBoss.t+=dt;
+   if(postBoss.t>1.2)postBoss.ropeY=Math.min(74,postBoss.ropeY+52*dt);
+   if(postBoss.t>3.1){
+     const targetX=W/2,targetY=postBoss.ropeY+3;
+     const a2=angle(player.x,player.y,targetX,targetY);
+     const d2=dist(player.x,player.y,targetX,targetY);
+     if(d2>10){player.x+=Math.cos(a2)*22*dt;player.y+=Math.sin(a2)*22*dt;}
+     else{postBoss.grabbed=true;}
+   }
+   if(postBoss.grabbed&&postBoss.t>4.15){state='ending';save();return;}
+ }
+ for(let i=projectiles.length-1;i>=0;i--){const p=projectiles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;if(p.enemy){if(dist(p.x,p.y,player.x,player.y)<player.r+p.r){applyDamage(.9);projectiles.splice(i,1);continue}}if(p.life<=0||p.x<8||p.x>W-8||p.y<8||p.y>H-8){if(!p.enemy)explode(clamp(p.x,12,W-12),clamp(p.y,12,H-12),30);projectiles.splice(i,1)}}
+ for(let i=particles.length-1;i>=0;i--){const p=particles[i];p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.96;p.vy*=.96;p.life-=dt;if(p.life<=0)particles.splice(i,1)}
+ for(let i=flames.length-1;i>=0;i--){flames[i].life-=dt;if(flames[i].life<=0)flames.splice(i,1)}
+ if(player.hp<=0){enterGameOver('The darkness claims the boy.');return}updateHUD();
+}
+
+function updateHUD(){if(!player)return;document.getElementById('stats').textContent=`HP ${Math.max(0,Math.ceil(player.hp))}/${player.maxHp} · FEAR ${Math.round(player.fear)}/100`;document.getElementById('stage').textContent=state==='satanFight'?'FINAL · THE ADVERSARY':`LEVEL ${stage+1} · ${LEVELS[Math.min(stage,7)].name}`;const cd=player.dashCd<=0?'DASH RDY':`DASH ${player.dashCd.toFixed(1)}s`;const mc=player.meleeCd<=0?'MELEE RDY':`MELEE ${player.meleeCd.toFixed(1)}s`;document.getElementById('inv').textContent=`RAG ${player.rags} · BTL ${player.bottles} · FUEL ${player.fuel} · MOLOTOV ${admin.unlimitedMolotovs?'∞':player.molotovs} · ${cd} · ${mc}${admin.damageOff?' · GODMODE':''}`}
+
+function drawFloor(){const L=LEVELS[Math.min(stage,7)],seed=room.seed;ctx.fillStyle=COLORS.bg;ctx.fillRect(0,0,W,H);ctx.fillStyle=COLORS.floor;ctx.fillRect(8,8,W-16,H-16);for(let y=8;y<H-8;y+=9)for(let x=8;x<W-8;x+=9){const n=rand01(seed+x*13+y*17);ctx.fillStyle=n>.85?COLORS.floor2:(n>.68?'#181319':'#151217');ctx.fillRect(x,y,9,9)}
+ if(L.theme==='dark'){for(let i=0;i<18;i++){const x=12+i*21,y=25+(i%4)*41;ctx.fillStyle='rgba(80,80,90,.12)';ctx.fillRect(x,y,5,5)}}
+ if(L.theme==='lament'){for(let i=0;i<9;i++){const x=20+i*42,y=25+(i%2)*70;ctx.fillStyle='rgba(180,160,160,.12)';ctx.fillRect(x,y,1,24);ctx.fillRect(x-2,y+23,5,1)}}
+ if(L.theme==='chasm'){ctx.fillStyle='rgba(12,10,15,.65)';ctx.fillRect(179,8,26,H-16);for(let i=0;i<11;i++){ctx.fillStyle='rgba(180,160,130,.1)';ctx.fillRect(179+irand(seed+i,0,25),12+i*17,irand(seed+i*3,5,18),1)}}
+ if(L.theme==='gates'){ctx.fillStyle='rgba(100,90,70,.13)';for(let i=0;i<7;i++){ctx.fillRect(60+i*40,20,7,6);ctx.fillRect(62+i*40,25,3,14)}}
+ if(L.theme==='ember'||L.theme==='court'||L.theme==='throne'){ctx.fillStyle='rgba(110,30,25,.14)';ctx.fillRect(12,12,W-24,3);ctx.fillRect(12,H-15,W-24,3)}
+ for(let i=0;i<130;i++){const x=Math.floor(rand01(seed+i*2)*W),y=Math.floor(rand01(seed+i*7)*H);ctx.fillStyle=`rgba(255,240,210,${.02+.04*rand01(seed+i*3)})`;ctx.fillRect(x,y,1,1)}
+}
+function drawWalls(){for(const o of room.walls){ctx.fillStyle=COLORS.stone;ctx.fillRect(o.x,o.y,o.w,o.h);ctx.fillStyle=COLORS.stone2;if(o.w>o.h)ctx.fillRect(o.x,o.y,o.w,2);else ctx.fillRect(o.x,o.y,2,o.h)}if(room.exitOpen){ctx.fillStyle='rgba(215,173,91,.6)';ctx.fillRect(W/2-13,H-9,26,2);}}
+function drawObstacles(){
+  for(const o of room.obstacles){
+    ctx.save();
+    ctx.translate(o.x,o.y);
+    const wob=Math.sin(performance.now()/600+o.seed)*.5;
+    if(o.type===0){
+      ctx.fillStyle='#2c2023';ctx.fillRect(0,0,o.w,o.h);
+      ctx.fillStyle='#5d4144';ctx.fillRect(2,1,o.w-4,2);
+      ctx.fillStyle='#171016';ctx.fillRect(3,5,o.w-6,o.h-6);
+      ctx.fillStyle='#7b554a';ctx.fillRect(2,o.h-3,o.w-6,2);
+    }else if(o.type===1){
+      ctx.fillStyle='#554439';ctx.fillRect(2,4,o.w,o.h-4);
+      ctx.fillStyle='#866b55';ctx.fillRect(0,1,o.w,5);
+      ctx.fillStyle='#30211e';ctx.fillRect(5,7,2,o.h-8);ctx.fillRect(o.w-6,7,2,o.h-8);
+    }else if(o.type===2){
+      ctx.fillStyle='#625b52';ctx.fillRect(3,0,o.w-6,o.h);
+      ctx.fillStyle='#a49781';ctx.fillRect(5,2,2,2);ctx.fillRect(o.w-7,4,2,2);
+      ctx.fillStyle='#31282a';ctx.fillRect(o.w/2-1,4,2,o.h-7);
+    }else{
+      ctx.fillStyle='#372329';ctx.fillRect(0,2,o.w,o.h-2);
+      ctx.fillStyle='#754047';ctx.fillRect(2,1,o.w-4,3);
+      ctx.fillStyle='#b65b52';ctx.fillRect(wob+o.w*.35,4,2,5);
+    }
+    ctx.restore();
+  }
+  // Detailed destroyed shelves and sideboards.
+  for(const f of room.furniture||[]){
+    ctx.save();
+    ctx.translate(Math.round(f.x),Math.round(f.y));
+    const t=performance.now()/220;
+    const bob=f.shake>0?Math.sin(t)*.8:0;
+    ctx.translate(bob,0);
+    if(f.type==='shelf'){
+      ctx.fillStyle='#2a181c';ctx.fillRect(0,0,f.w,f.h);
+      ctx.fillStyle='#714b40';ctx.fillRect(0,0,f.w,2);ctx.fillRect(1,f.h/2,f.w-2,2);
+      ctx.fillStyle='#4c302c';ctx.fillRect(2,3,f.w-4,3);
+      ctx.fillStyle='#8c5946';ctx.fillRect(f.w-5,1,2,f.h-1);ctx.fillRect(4,f.h-1,2,5);ctx.fillRect(f.w-4,f.h-1,2,5);
+      ctx.fillStyle='#c49d73';ctx.fillRect(5,4,2,2);ctx.fillRect(10,7,4,1);
+    }else{
+      ctx.fillStyle='#4a2f2d';ctx.fillRect(0,3,f.w,f.h-3);
+      ctx.fillStyle='#825746';ctx.fillRect(1,0,f.w-2,4);
+      ctx.fillStyle='#241317';ctx.fillRect(3,5,f.w-6,f.h-8);
+      ctx.fillStyle='#aa6b4e';ctx.fillRect(2,1,2,7);ctx.fillRect(f.w-4,1,2,7);
+      ctx.fillStyle='#c69c6c';ctx.fillRect(f.w/2-1,6,2,2);
+    }
+    if(!f.searched){ctx.fillStyle='rgba(215,173,91,.45)';ctx.fillRect(f.w/2-3,-4,6,1)}
+    else{ctx.fillStyle='rgba(0,0,0,.35)';ctx.fillRect(2,2,f.w-4,2)}
+    ctx.restore();
+  }
+}
+function drawItem(it){const bob=Math.sin(player.anim*3+it.bob)*1.3;ctx.save();ctx.translate(it.x,it.y+bob);if(it.type==='rag'){ctx.fillStyle='#c5b18e';ctx.fillRect(-4,-3,8,6);ctx.fillStyle='#80605a';ctx.fillRect(-2,-5,4,2);ctx.fillRect(2,1,2,2)}else if(it.type==='bottle'){ctx.fillStyle='#718c81';ctx.fillRect(-3,-4,6,8);ctx.fillStyle='#cbb989';ctx.fillRect(-2,-6,4,2);ctx.fillStyle='#31504a';ctx.fillRect(1,-2,2,4)}else{ctx.fillStyle='#71402c';ctx.fillRect(-4,-3,8,7);ctx.fillStyle='#d3a052';ctx.fillRect(-3,-5,3,2);ctx.fillStyle='#3b201c';ctx.fillRect(1,-1,2,3)}ctx.restore()}
+
+function drawEnemy(e){if(e.dead)return;ctx.save();ctx.translate(Math.round(e.x),Math.round(e.y));const t=performance.now()/1000,blink=Math.sin(t*3+e.seed)>-.1;ctx.globalAlpha=.98;if(e.hurt>0)ctx.globalAlpha=.75;
+ if(e.kind==='dreg'){// jagged humanoid corpse
+  const sway=Math.sin(t*7+e.seed)*1;ctx.fillStyle='#56222e';ctx.fillRect(-7+sway,-6,14,13);ctx.fillStyle='#241019';ctx.fillRect(-9,-8,4,5);ctx.fillRect(5,-9,4,6);ctx.fillStyle='#160a0f';ctx.fillRect(-8,-11,3,5);ctx.fillRect(5,-11,3,5);ctx.fillStyle='#8e3640';ctx.fillRect(-5,-6,3,3);ctx.fillRect(2,-6,3,3);ctx.fillStyle='#070509';ctx.fillRect(-7,-1,5,4);ctx.fillRect(2,-1,5,4);if(blink){ctx.fillStyle='#d5b14e';ctx.fillRect(-5,0,2,1);ctx.fillRect(3,0,2,1)}ctx.fillStyle='#09070a';ctx.fillRect(-7,3,14,4);ctx.fillStyle='#e0cba9';for(let q=-6;q<=6;q+=3)ctx.fillRect(q,3,1,2);ctx.fillStyle='#7b343d';ctx.fillRect(-9,4,2,7);ctx.fillRect(7,4,2,7);ctx.fillRect(-3,7,2,6);ctx.fillRect(2,7,2,6);
+ }else if(e.kind==='hound'){// skeletal predator
+  const run=Math.sin(t*12+e.seed)*1.4;ctx.fillStyle='#342029';ctx.fillRect(-8,-2,15,8);ctx.fillRect(4,-7,8,7);ctx.fillStyle='#120a0f';ctx.fillRect(5,-5,5,4);ctx.fillStyle='#e1bd5d';ctx.fillRect(7,-4,1,1);ctx.fillStyle='#6b3038';ctx.fillRect(-9,-5,3,3);ctx.fillRect(-3,-6,3,3);ctx.fillRect(2,-7,3,3);ctx.fillStyle='#08060a';ctx.fillRect(5,0,8,4);ctx.fillStyle='#d7c7a5';for(let q=6;q<=12;q+=2)ctx.fillRect(q,1,1,2);ctx.fillStyle='#70404a';ctx.fillRect(-9,6,4,3);ctx.fillRect(-1,6,3,3);ctx.fillRect(5,6,4,3);ctx.fillStyle='#1b1016';ctx.fillRect(-5,8+run,2,4);ctx.fillRect(4,8-run,2,4);
+ }else if(e.kind==='wailer'){// hanging face with stretched jaw
+  const sway=Math.sin(t*2.8+e.seed)*1.2;ctx.fillStyle='#514568';ctx.fillRect(-7+sway,-9,14,20);ctx.fillRect(-4,-12,8,3);ctx.fillStyle='#282036';ctx.fillRect(-9,-3,18,10);ctx.fillStyle='#09070d';ctx.fillRect(-6,-5,4,5);ctx.fillRect(2,-5,4,5);ctx.fillStyle='#c6b78f';ctx.fillRect(-5,-4,2,2);ctx.fillRect(3,-4,2,2);ctx.fillStyle='#0c0810';ctx.fillRect(-6,2,12,8);ctx.fillStyle='#e0d1ae';for(let q=-5;q<=5;q+=2)ctx.fillRect(q,3,1,2);ctx.fillStyle='#78608b';ctx.fillRect(-10,-1,2,11);ctx.fillRect(8,-2,2,12);ctx.fillStyle='#a08db0';ctx.fillRect(-2,-11,1,3);ctx.fillRect(1,-10,1,2);
+ }else if(e.kind==='charger'){// horned charging corpse
+  const r=Math.sin(t*10+e.seed)*1;ctx.fillStyle='#642938';ctx.fillRect(-7,-7,14,13);ctx.fillStyle='#231017';ctx.fillRect(-11,-10,5,5);ctx.fillRect(6,-10,5,5);ctx.fillStyle='#0e080c';ctx.fillRect(-7,-4,4,4);ctx.fillRect(3,-4,4,4);ctx.fillStyle='#f0cf6c';ctx.fillRect(-6,-3,2,2);ctx.fillRect(4,-3,2,2);ctx.fillStyle='#0a070b';ctx.fillRect(-6,1,12,5);ctx.fillStyle='#d7c4a5';for(let q=-5;q<=5;q+=2)ctx.fillRect(q,1,1,2);ctx.fillStyle='#9b4947';ctx.fillRect(-8,5,3,5);ctx.fillRect(5,5,3,5);ctx.fillStyle='#31151e';ctx.fillRect(-4,6,3+r,6);ctx.fillRect(1,6,3-r,6);
+ }else if(e.kind==='pyre'){// ash-coated furnace creature
+  ctx.fillStyle='#5f2b2a';ctx.fillRect(-7,-8,14,17);ctx.fillStyle='#281216';ctx.fillRect(-5,-4,3,3);ctx.fillRect(2,-4,3,3);ctx.fillStyle='#ffad42';ctx.fillRect(-4,-3,2,2);ctx.fillRect(2,-3,2,2);ctx.fillStyle='#0b080c';ctx.fillRect(-6,1,12,7);ctx.fillStyle='#cdbd9d';for(let q=-5;q<=5;q+=2)ctx.fillRect(q,2,1,2);ctx.fillStyle='#8f3b35';ctx.fillRect(-9,-1,2,11);ctx.fillRect(7,-1,2,11);ctx.fillStyle='#e46a37';ctx.fillRect(-2,-10,4,3);ctx.fillRect(-1,-13,2,3);
+ }
+ ctx.restore();if(e.kind!=='boss'){ctx.fillStyle='rgba(0,0,0,.35)';ctx.fillRect(e.x-7,e.y+8,14,2)}}
+function drawSatanBoss(e){
+ if(e.dead && !postBoss.active)return;
+ const t=performance.now()/1000;
+ if(!e.dead){
+   const hpK=clamp(e.hp/e.maxHp,0,1);
+   ctx.save();ctx.translate(Math.round(e.x),Math.round(e.y));
+   const wob1=Math.sin(t*5.8)*1.8,wob2=Math.sin(t*3.1+1.7)*2.4;
+   const twist=Math.sin(t*2.35)*0.16;
+   ctx.rotate(twist);
+   // Huge molten aura made from chunky pixels.
+   for(let k=0;k<18;k++){
+     const a=t*1.7+k*.86, rr=34+7*Math.sin(t*4+k*.9), px=Math.cos(a)*rr, py=Math.sin(a)*rr*.78;
+     ctx.fillStyle=k%3===0?'#ffd56b':k%3===1?'#f36e2d':'#8e2223';
+     ctx.fillRect(Math.round(px),Math.round(py),3+(k%2),3+(k%3===0?1:0));
+   }
+   // Fire-shrouded wings with black-red feather blocks.
+   const wing=(side)=>{
+     ctx.save();ctx.scale(side,1);ctx.fillStyle='#180c11';ctx.beginPath();ctx.moveTo(7,-10);ctx.lineTo(28,-37);ctx.lineTo(47,-29);ctx.lineTo(37,-18);ctx.lineTo(56,-11);ctx.lineTo(41,-2);ctx.lineTo(55,9);ctx.lineTo(32,13);ctx.lineTo(38,28);ctx.lineTo(11,14);ctx.closePath();ctx.fill();
+     const feathers=[[-27,-28,10,4],[-21,-18,13,4],[-14,-7,12,4],[0,4,16,4],[10,14,12,4]];
+     for(let i=0;i<feathers.length;i++){const f=feathers[i];ctx.fillStyle=i%2?'#48202a':'#63232b';ctx.fillRect(f[0],f[1],f[2],f[3]);}
+     ctx.fillStyle='#c33727';ctx.fillRect(29,-35,4,10);ctx.fillRect(41,-25,4,8);ctx.fillRect(48,-9,5,5);
+     ctx.restore();
+   };
+   wing(-1);wing(1);
+   // Goat-like skull and horns.
+   ctx.fillStyle='#d2c29b';ctx.beginPath();ctx.moveTo(-11,-31);ctx.lineTo(-16,-20);ctx.lineTo(-10,-10);ctx.lineTo(10,-10);ctx.lineTo(16,-20);ctx.lineTo(11,-31);ctx.closePath();ctx.fill();
+   ctx.fillStyle='#6f3f42';ctx.fillRect(-7,-27,4,7);ctx.fillRect(3,-27,4,7);
+   ctx.fillStyle='#0a0609';ctx.fillRect(-5,-25,3,2);ctx.fillRect(2,-25,3,2);ctx.fillRect(-8,-18,16,4);
+   ctx.fillStyle='#d2c29b';ctx.fillRect(-4,-13,8,2);ctx.fillStyle='#351419';ctx.fillRect(-6,-11,12,3);
+   // Curving ram/goat horns.
+   ctx.fillStyle='#8c785c';
+   ctx.fillRect(-15,-35,4,9);ctx.fillRect(-18,-39,4,7);ctx.fillRect(-20,-43,4,6);ctx.fillRect(-21,-47,3,5);
+   ctx.fillRect(11,-35,4,9);ctx.fillRect(14,-39,4,7);ctx.fillRect(16,-43,4,6);ctx.fillRect(18,-47,3,5);
+   // Long animalistic torso.
+   ctx.fillStyle='#5d1d25';ctx.fillRect(-12,-8,24,35);ctx.fillStyle='#9f3028';ctx.fillRect(-8,-5,16,27);ctx.fillStyle='#d75b2c';
+   for(let yy=0;yy<6;yy++){ctx.fillRect(-5,yy*5-3,10,2);ctx.fillRect(-7,yy*5-1,3,2);ctx.fillRect(4,yy*5-1,3,2)}
+   // Pectoral fire slits.
+   ctx.fillStyle='#ffd66a';ctx.fillRect(-9,-2,5,2);ctx.fillRect(4,-2,5,2);ctx.fillRect(-8,9,4,2);ctx.fillRect(4,9,4,2);
+   // Arms ending in claws.
+   ctx.strokeStyle='#3a1118';ctx.lineWidth=6;ctx.beginPath();ctx.moveTo(-10,-4);ctx.lineTo(-30,10+wob1);ctx.lineTo(-40,27+wob2);ctx.stroke();ctx.beginPath();ctx.moveTo(10,-4);ctx.lineTo(30,10-wob1);ctx.lineTo(40,27-wob2);ctx.stroke();
+   ctx.fillStyle='#b3382d';ctx.fillRect(-43,24,7,4);ctx.fillRect(-35,29,5,3);ctx.fillRect(36,24,7,4);ctx.fillRect(30,29,5,3);
+   // Goat legs / digitigrade stance.
+   ctx.fillStyle='#40131b';ctx.fillRect(-13,22,10,26);ctx.fillRect(3,22,10,26);ctx.fillStyle='#7a2528';ctx.fillRect(-11,39,6,11);ctx.fillRect(5,39,6,11);
+   ctx.fillStyle='#d6c39a';ctx.fillRect(-15,48,10,4);ctx.fillRect(5,48,10,4);
+   // Forked tail made from moving pixel segments.
+   const tailX=16+Math.sin(t*3)*2;ctx.fillStyle='#6b2028';ctx.fillRect(tailX,22,5,16);ctx.fillRect(tailX+3,35,4,12);ctx.fillStyle='#d2452e';ctx.fillRect(tailX+2,45,5,4);
+   // Twisting flame columns distort the silhouette.
+   for(let k=0;k<11;k++){
+     const xx=-27+k*5+Math.sin(t*7+k)*2;const top=-11-Math.abs(Math.sin(t*5+k*.8))*18-k%3*3;
+     ctx.fillStyle=k%3===0?'#ffd25f':k%3===1?'#f47a29':'#9f2725';
+     ctx.fillRect(Math.round(xx),Math.round(top),3,11+k%4*2);
+   }
+   // Pulsating black core.
+   ctx.fillStyle=`rgba(5,3,6,${.35+.16*Math.sin(t*6)})`;ctx.fillRect(-7,-2,14,25);
+   ctx.restore();
+   // Distortion rings / ghost copies.
+   for(let k=0;k<4;k++){
+     const dx=Math.sin(t*4.2+k*1.7)*(3+k*2),dy=Math.cos(t*3.5+k)*2;
+     ctx.globalAlpha=.09-.015*k;ctx.strokeStyle=k%2?'#ef4e32':'#d7ad5b';ctx.strokeRect(e.x-19+dx,e.y-48+dy,38,100);ctx.globalAlpha=1;
+   }
+   ctx.fillStyle='#16090f';ctx.fillRect(e.x-38,e.y-57,76,5);ctx.fillStyle='#ef4e32';ctx.fillRect(e.x-38,e.y-57,76*hpK,5);ctx.fillStyle='#f1d3ae';ctx.font='7px monospace';ctx.textAlign='center';ctx.fillText('SATAN — THE ADVERSARY',e.x,e.y+60);
+ } else if(postBoss.active){
+   const p=postBoss.t;
+   // Rebuilding body: sparks, bones, and a warped core pulling itself together.
+   const rebuild=clamp((p-1.0)/3.1,0,1);
+   ctx.save();ctx.translate(e.x,e.y);ctx.globalAlpha=.45+.55*rebuild;
+   ctx.fillStyle='#12090d';ctx.beginPath();ctx.arc(0,15,17+5*Math.sin(p*8),0,Math.PI*2);ctx.fill();
+   for(let k=0;k<18;k++){const a=k*.91+p*1.7,rr=6+rebuild*(18+5*Math.sin(k+p*4));ctx.fillStyle=k%2?'#ef4e32':'#ffd45e';ctx.fillRect(Math.round(Math.cos(a)*rr),Math.round(Math.sin(a)*rr),3,3)}
+   ctx.fillStyle='#7f6670';ctx.fillRect(-10,2,20,3);ctx.fillRect(-7,8,14,3);ctx.fillRect(-3,14,6,5);
+   ctx.restore();
+ }
+}
+function drawPlayer(){ctx.save();ctx.translate(Math.round(player.x),Math.round(player.y));if(player.invuln>0&&Math.floor(player.anim*18)%2===0)ctx.globalAlpha=.38;const bob=Math.sin(player.step)*.7;ctx.translate(0,bob);ctx.fillStyle='rgba(0,0,0,.4)';ctx.fillRect(-8,8,16,3);ctx.fillStyle=COLORS.player;ctx.fillRect(-6,-9,12,10);ctx.fillStyle=COLORS.hair;ctx.fillRect(-6,-10,12,4);ctx.fillRect(-7,-8,2,5);ctx.fillRect(5,-8,2,5);ctx.fillStyle=COLORS.skin;ctx.fillRect(-3,-4,2,2);ctx.fillRect(2,-4,2,2);ctx.fillStyle='#64505a';ctx.fillRect(-5,2,10,9);ctx.fillStyle='#8f6d68';ctx.fillRect(-2,4,4,5);ctx.fillStyle='#2f252c';ctx.fillRect(-6,10,4,3);ctx.fillRect(2,10,4,3);ctx.fillStyle=COLORS.gold;ctx.fillRect(7,-1,1,6);ctx.fillRect(6,0,3,1);
+ if(player.meleeTimer>0){
+   const a=angle(player.x,player.y,mouse.x,mouse.y),swing=(1-player.meleeTimer/.16)*1.45;
+   ctx.save();ctx.rotate(a);ctx.strokeStyle='#d7c0a6';ctx.lineWidth=2;ctx.beginPath();ctx.arc(0,1,12,-.95+swing,-.2+swing);ctx.stroke();ctx.fillStyle='#efe1c8';ctx.fillRect(8,-1,6,2);ctx.restore();
+ }
+ ctx.restore()}
+function drawEscapeRope(){
+ const t=performance.now()/1000;const y=postBoss.ropeY;ctx.save();ctx.strokeStyle='#d7c7a5';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(W/2-1,-4);ctx.lineTo(W/2+Math.sin(t*3)*1.7,y+4);ctx.stroke();ctx.strokeStyle='#6d5647';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(W/2+2,-4);ctx.lineTo(W/2+Math.sin(t*3+1)*1.2,y+5);ctx.stroke();ctx.fillStyle='#ead9b7';ctx.fillRect(W/2-3,y,6,3);if(postBoss.grabbed){ctx.fillStyle='#f3e2bd';ctx.fillRect(W/2-6,y+3,12,2);ctx.fillStyle='#171017';ctx.font='7px monospace';ctx.textAlign='center';ctx.fillText('GRAB',W/2,y+14)}ctx.restore();
+}
+function drawProjectile(p){ctx.fillStyle=p.enemy?COLORS.purple:COLORS.ember;ctx.fillRect(Math.round(p.x)-2,Math.round(p.y)-2,4,4);ctx.fillStyle='#f4dca5';ctx.fillRect(Math.round(p.x)-1,Math.round(p.y)-3,2,1)}
+function drawFlame(f){const k=clamp(f.life/3,0,1),rr=f.radius*(.75+.25*k);ctx.fillStyle=`rgba(239,78,50,${.13*k})`;ctx.beginPath();ctx.arc(f.x,f.y,rr,0,Math.PI*2);ctx.fill();ctx.fillStyle=`rgba(255,177,59,${.2*k})`;ctx.beginPath();ctx.arc(f.x,f.y,rr*.45,0,Math.PI*2);ctx.fill();for(let i=0;i<5;i++){const x=f.x+Math.sin(performance.now()/120+i)*rr*.45,y=f.y-Math.abs(Math.cos(performance.now()/160+i))*rr*.65;ctx.fillStyle=`rgba(255,190,70,${.45*k})`;ctx.fillRect(Math.round(x),Math.round(y),1,2)}}
+function drawParticles(){for(const p of particles){ctx.globalAlpha=clamp(p.life,0,1);ctx.fillStyle=p.kind==='fire'?COLORS.ember:p.kind==='ash'?COLORS.ash:p.kind==='slash'?'#e8dcc5':'#f7e0b0';ctx.fillRect(Math.round(p.x),Math.round(p.y),p.kind==='fire'?2:1,p.kind==='fire'?2:1);ctx.globalAlpha=1}}
+function drawFloating(){for(const f of floatingText){ctx.globalAlpha=clamp(f.life,0,1);ctx.fillStyle=COLORS.gold;ctx.font='6px monospace';ctx.textAlign='center';ctx.fillText(f.text,f.x,f.y);ctx.globalAlpha=1}}
+function drawSatanNausea(){
+ const t=performance.now()/1000;
+ const pulse=(Math.sin(t*2.6)+1)/2;
+ const sway=Math.sin(t*3.6)*1.25;
+ ctx.save();
+ ctx.imageSmoothingEnabled=false;
+ // Peripheral optic-flow field: expanding motion cues are strongest at the edges,
+ // which is a documented source of vection / visually-induced motion discomfort.
+ const cx=room?.enemies?.[0]?.x ?? W/2, cy=room?.enemies?.[0]?.y ?? H/2;
+ const count=44;
+ for(let i=0;i<count;i++){
+   const a=(i*2.3999632297)+t*(.48+(i%3)*.08);
+   const phase=(t*.72+(i*0.173))%1;
+   const r=28+phase*225;
+   const x=cx+Math.cos(a)*r;
+   const y=cy+Math.sin(a)*r*.72;
+   if(x<-4||x>W+4||y<-4||y>H+4) continue;
+   const len=2+phase*7;
+   const alpha=.025+.055*(1-phase)*(0.65+0.35*pulse);
+   ctx.globalAlpha=alpha;
+   ctx.fillStyle=i%4===0?'#f1c467':(i%4===1?'#b93c35':'#6f1f2d');
+   ctx.fillRect(Math.round(x),Math.round(y),Math.max(1,Math.round(len)),1);
+ }
+ // Slow whole-frame vertical sway / breathing cue, kept below seizure-like frequencies.
+ ctx.globalAlpha=.08+.045*pulse;
+ ctx.fillStyle='#6b1e2b';
+ ctx.fillRect(0,Math.round(sway),W,2);
+ ctx.fillRect(0,H-2+Math.round(sway),W,2);
+ // Concentric pixel rings around Satan create expanding/contracting depth cues.
+ ctx.globalAlpha=.06+.035*pulse;
+ ctx.strokeStyle='#ed6334';
+ ctx.lineWidth=1;
+ for(let k=0;k<5;k++){
+   const rr=26+((t*22+k*31)%120);
+   ctx.strokeRect(Math.round(cx-rr),Math.round(cy-rr*.7),Math.round(rr*2),Math.round(rr*1.4));
+ }
+ // Mild chromatic separation on the boss silhouette; no blur is used so the 32-bit art stays crisp.
+ ctx.globalAlpha=.11;
+ ctx.strokeStyle='#f04c3a';
+ ctx.strokeRect(Math.round(cx-41+Math.sin(t*4)*1.5),Math.round(cy-60),82,112);
+ ctx.globalAlpha=.07;
+ ctx.strokeStyle='#7168b0';
+ ctx.strokeRect(Math.round(cx-37-Math.sin(t*4)*1.5),Math.round(cy-60),74,108);
+ ctx.restore();
+}
+function draw(){ctx.clearRect(0,0,W,H);if(state==='menu'||state==='ending'||state==='gameover'){drawTitle();if(state==='ending')drawEnding();return}drawFloor();drawWalls();drawObstacles();for(const it of room.items)drawItem(it);for(const f of flames)drawFlame(f);for(const e of room.enemies){if(e.kind==='satan')drawSatanBoss(e);else drawEnemy(e)}if(state==='satanFight'&&postBoss.active)drawEscapeRope();for(const p of projectiles)drawProjectile(p);drawParticles();drawPlayer();drawFloating();if(state==='satanFight'&&!postBoss.active)drawSatanNausea();ctx.strokeStyle='rgba(238,228,210,.6)';ctx.strokeRect(mouse.x-2,mouse.y-2,5,5);if(room.exitOpen&&state==='game'){ctx.fillStyle='#d7ad5b';ctx.font='6px monospace';ctx.textAlign='center';ctx.fillText(stage<7?'DESCEND ↓':'APPROACH',W/2,H-13)}if(state==='satanFight'&&postBoss.active){ctx.fillStyle='rgba(0,0,0,.18)';ctx.fillRect(0,0,W,H);ctx.fillStyle='#e9dcc4';ctx.font='7px monospace';ctx.textAlign='center';ctx.fillText(postBoss.grabbed?'THE WAY UP':'KEEP MOVING',W/2,202)}if(paused){ctx.fillStyle='rgba(0,0,0,.65)';ctx.fillRect(0,0,W,H);ctx.fillStyle=COLORS.text;ctx.font='10px monospace';ctx.textAlign='center';ctx.fillText('PAUSED — ESC TO RESUME',W/2,H/2)}}
+function drawTitle(){ctx.fillStyle='#08070a';ctx.fillRect(0,0,W,H);for(let i=0;i<100;i++){const x=rand01(900+i)*W,y=rand01(1200+i)*H;ctx.fillStyle=i%5===0?'#d6ab58':'#5b4b55';ctx.fillRect(x,y,1,1)}ctx.fillStyle='rgba(80,20,28,.25)';ctx.beginPath();ctx.arc(W/2,128,72,0,Math.PI*2);ctx.fill();ctx.fillStyle='#4b3d3d';ctx.fillRect(135,55,10,100);ctx.fillRect(239,55,10,100);ctx.fillStyle='#2b2429';ctx.fillRect(145,120,94,6);ctx.fillStyle='#eadfca';ctx.font='bold 27px monospace';ctx.textAlign='center';ctx.fillText('GRAVEMASTER',W/2,31);ctx.font='9px monospace';ctx.fillStyle='#9b8f8b';ctx.fillText('ASHES OF HADES',W/2,44)}
+function drawEnding(){ctx.fillStyle='rgba(10,8,11,.78)';ctx.fillRect(20,52,W-40,112);ctx.fillStyle='#eadfca';ctx.font='bold 12px monospace';ctx.textAlign='center';ctx.fillText('THE ROPE',W/2,73);ctx.font='8px monospace';ctx.fillStyle='#c2b9ad';ctx.fillText('The boy reaches upward as the darkness falls away below him.',W/2,92);ctx.fillText('Whatever waits above, he is no longer in Satan’s hands.',W/2,104);ctx.fillStyle='#d7ad5b';ctx.fillText('END OF CHAPTER I',W/2,128);ctx.fillStyle='#817a76';ctx.font='7px monospace';ctx.fillText('ENTER — RETURN TO MENU',W/2,151)}
+function drawPixelFlameColumn(x, baseY, maxH, width, phase, intensity=1){
+ const cell=3;
+ const cols=Math.max(4,Math.floor(width/cell));
+ const rows=Math.max(5,Math.floor(maxH/cell));
+ const t=performance.now()/1000;
+ const rise=Math.sin(t*5.5+phase)*.18 + Math.sin(t*2.4+phase*1.7)*.08;
+ const crawl=clamp((Math.sin(t*3.7+phase)+1)/2,0,1);
+ const flameH=Math.max(cell*4, rows*cell*(.72+.22*crawl+rise));
+ const hotRows=Math.max(2,Math.floor(rows*.27));
+ const midRows=Math.max(hotRows+2,Math.floor(rows*.65));
+ const palette=['#ffd96a','#ffb338','#f07a2d','#c83e2b','#7a1f20','#351216'];
+ for(let r=0;r<rows;r++){
+   const y=baseY-r*cell;
+   const yn=r*cell/flameH;
+   if(yn>1.04) continue;
+   const center=cols/2 + Math.sin(t*4.2+phase+r*.44)*cols*.10 + Math.sin(t*1.8+phase*2+r*.15)*cols*.05;
+   const spread=Math.max(1,Math.floor((1-yn)*cols*.55 + 1));
+   for(let c=0;c<cols;c++){
+     const edge=Math.abs(c-center);
+     const localNoise=Math.sin(c*1.77+r*.91+phase*3.13+t*5.2);
+     let threshold=spread + localNoise*.65;
+     // Jagged 32-bit silhouette: tongues break and reconnect as they climb.
+     if(edge>threshold) continue;
+     const pocket=Math.sin(c*2.4-r*.7+t*7+phase)>0.62;
+     if(pocket && yn>.18) continue;
+     let pi;
+     if(yn<hotRows/rows) pi=0;
+     else if(yn<midRows/rows) pi=1;
+     else if(yn<.82) pi=2;
+     else if(yn<.95) pi=3;
+     else pi=4;
+     if(localNoise<-.55 && yn>.55) pi=Math.min(5,pi+1);
+     ctx.fillStyle=palette[pi];
+     ctx.globalAlpha=(.78+.22*clamp(intensity,0,1));
+     ctx.fillRect(Math.round(x+c*cell),Math.round(y),cell,cell);
+     // Bright inner pixel highlights give the flame a chunky 32-bit sprite feel.
+     if(pi<=1 && ((r+c+Math.floor(t*8))%5===0)){
+       ctx.fillStyle='#fff1a6';
+       ctx.fillRect(Math.round(x+c*cell),Math.round(y),Math.max(1,cell-1),Math.max(1,cell-1));
+     }
+   }
+ }
+}
+function drawFlameTransition(){
+ if(!transition.active)return;
+ const p=clamp(transition.t/transition.dur,0,1);
+ // Fire is a true animated pixel curtain: it crawls upward, reaches a crest,
+ // then visibly crawls back down before the next scene is exposed.
+ const forward=transition.phase==='in'?p:1-p;
+ const crest=.5;
+ const crawl=forward<=crest ? forward/crest : 1-(forward-crest)/crest;
+ const cover=transition.phase==='in' ? (p<crest ? forward : .02+.98*(1-(p-crest)/crest))
+                                    : (p<crest ? .02+.98*forward : 1-(p-crest)/crest);
+ const amount=clamp(crawl,0,1);
+ ctx.save();
+ ctx.imageSmoothingEnabled=false;
+ // Deep ember underglow, kept subdued so the flame sprites remain the focus.
+ ctx.globalAlpha=.12+.32*amount;
+ ctx.fillStyle='#3a0d0e';
+ ctx.fillRect(0,0,W,H);
+ 
+ const cols=Math.ceil(W/12);
+ for(let i=0;i<cols;i++){
+   const x=i*12;
+   const phase=i*.77;
+   // Each column has a slightly different growth curve, creating a crawling wave.
+   const stagger=.08*Math.sin(i*1.9);
+   const local=clamp((amount-stagger)*1.12,0,1);
+   const maxH=H*(.42+.54*local);
+   drawPixelFlameColumn(x,H-2,maxH,12,phase,cover);
+ }
+ // A few independent tongues break above the main curtain for an organic edge.
+ for(let i=0;i<12;i++){
+   const x=((i*53)%W);
+   const phase=i*1.41+2;
+   const local=clamp(amount*(.62+.34*Math.sin(i*2.1)),0,1);
+   drawPixelFlameColumn(x,H-2,H*(.12+.28*local),9,phase,.8*cover);
+ }
+ // When the curtain is fully deployed, briefly darken the gap so the cutscene
+ // can switch underneath it without a hard visual pop.
+ if((transition.phase==='in' && p>=crest) || (transition.phase==='out' && p<crest)){
+   const veil=transition.phase==='in' ? 1-(p-crest)/crest : (p/crest);
+   ctx.globalAlpha=.45*clamp(veil,0,1);
+   ctx.fillStyle='#050407';
+   ctx.fillRect(0,0,W,H);
+ }
+ ctx.restore();
+}
+function drawCutscene(){
+ ctx.fillStyle='#050407';ctx.fillRect(0,0,W,H);
+ const L=cutscene.lines[cutscene.i] || null;
+ if(L){
+   if(cutscene.kind==='intro'||cutscene.kind==='finalIntro')satanSprite(W/2,82,1.55,.98);
+   else satanSprite(W/2,78,1.15,.92);
+   ctx.fillStyle='rgba(215,173,91,.15)';ctx.fillRect(0,0,W,3);
+   ctx.fillStyle='rgba(0,0,0,.9)';ctx.fillRect(18,144,W-36,54);
+   ctx.strokeStyle='#59444a';ctx.strokeRect(18,144,W-36,54);
+   ctx.fillStyle=L[0]==='SATAN'?'#d7ad5b':L[0]==='BOY'?'#d6cfc2':'#8f8884';
+   ctx.font='7px monospace';ctx.textAlign='left';ctx.fillText(L[0],28,158);
+   ctx.fillStyle='#ddd4c6';ctx.font='8px monospace';wrapText(L[1],28,171,W-56,10);
+ }
+ drawFlameTransition();
+}
+function wrapText(text,x,y,maxWidth,lh){const words=text.split(' ');let line='';for(const w of words){const test=line?line+' '+w:w;if(ctx.measureText(test).width>maxWidth&&line){ctx.fillText(line,x,y);line=w;y+=lh}else line=test}if(line)ctx.fillText(line,x,y)}
+function loreScreen(){const overlay=document.createElement('div');overlay.id='loreOverlay';overlay.style.cssText='position:absolute;inset:10px;background:rgba(6,5,8,.97);border:2px solid #5e4b52;padding:22px;overflow:auto;z-index:9';let h='<div style="display:flex;justify-content:space-between;gap:12px;align-items:center"><h2 style="margin:0;color:#e6d8bf">THE GRIMOIRE OF ASHES</h2><button id="closeLore">CLOSE [L]</button></div><p style="font-size:11px;color:#8e8581">Fragments recovered from the descent.</p>';for(let i=0;i<LORE.length;i++){const k=lore.includes(i);h+=`<section style="margin:14px 0;padding:11px;border:1px solid ${k?'#735b45':'#262128'};background:${k?'#141016':'#0c0a0f'}"><div style="font-weight:bold;color:${k?'#d6ab58':'#5b5553'}">${k?LORE[i].title:'???'}</div><div style="margin-top:6px;color:${k?'#c8c0b4':'#4a4645'};line-height:1.55;font-size:11px">${k?LORE[i].text:'The page is still buried.'}</div></section>`}h+='<p style="font-size:9px;color:#666">The deeper you go, the less the darkness resembles the promises made at the gate.</p>';overlay.innerHTML=h;document.getElementById('wrap').appendChild(overlay);document.getElementById('closeLore').onclick=()=>overlay.remove()}
+
+function setAdminStatus(msg){document.getElementById('adminStatus').textContent=msg}
+function refreshAdminUI(){
+ document.getElementById('godToggle').textContent=`DAMAGE: ${admin.damageOff?'OFF':'ON'}`;
+ document.getElementById('mollyToggle').textContent=`MOLOTOVS: ${admin.unlimitedMolotovs?'UNLIMITED':'NORMAL'}`;
+}
+function adminOpen(){document.getElementById('adminPanel').hidden=false;document.getElementById('deathScreen').hidden=true;refreshAdminUI();setAdminStatus('');}
+function adminClose(){document.getElementById('adminPanel').hidden=true;}
+function adminSkip(toStage){
+ const hasCurrentRun=!!player;
+ cutscene={active:false,lines:[],i:0,onDone:null,kind:'',transition:'out',transitionT:0,transitionDur:.72,pendingDone:null};
+ transition={active:false,phase:'in',t:0,dur:.72,pending:null};
+ paused=false;
+ document.getElementById('adminPanel').hidden=true;
+ document.getElementById('deathScreen').hidden=true;
+ document.getElementById('menu').classList.add('hidden');
+ if(toStage>=8){
+   stage=7;
+   if(!hasCurrentRun){player=createPlayer();resetStage(false)}else{resetStage(true)}
+   openCutscene([['SATAN','You have arrived.'],['SATAN','Come nearer.']],()=>{state='satanFight';stage=8;resetFinalBoss();setTip('TIP: SATAN is vulnerable to MELEE. Get close and keep striking between his attacks.',5200);},'finalIntro');
+   return;
+ }
+ stage=clamp(toStage,0,7);
+ if(!hasCurrentRun){player=createPlayer();resetStage(false)}else{resetStage(true)}
+ state='game';
+ if(admin.unlimitedMolotovs)player.molotovs=99;
+ updateHUD();
+ toast(`${LEVELS[stage].name}`,1000);
+}
+
+function bind(){
+ window.addEventListener('keydown',e=>{
+  if(e.code==='Space')e.preventDefault();
+  if((cutscene.active)&&(e.code==='Space'||e.code==='Enter')){advanceCutscene();return}
+  if(state==='ending'&&e.code==='Enter'){document.getElementById('menu').classList.remove('hidden');state='menu';return}
+  if(state==='gameover'&&(e.code==='Enter'||e.code==='KeyR')){beginGame();return}
+  if(e.code==='KeyL'&&!e.repeat){if(document.getElementById('loreOverlay'))document.getElementById('loreOverlay').remove();else if((state==='game'||state==='satanFight')&&!cutscene.active)loreScreen();return}
+    if(e.code==='Escape'&&!e.repeat&&(state==='game'||state==='satanFight')){paused=!paused;return}
+  if(e.code==='KeyE'&&!e.repeat&&(state==='game'||state==='satanFight')&&!paused){search();return}
+  if(e.code==='KeyF'&&!e.repeat&&(state==='game'||state==='satanFight')&&!paused){melee();return}
+  keys.add(e.code);
+ });
+ window.addEventListener('keyup',e=>keys.delete(e.code));
+ C.addEventListener('mousemove',e=>{const r=C.getBoundingClientRect();mouse.x=(e.clientX-r.left)*W/r.width;mouse.y=(e.clientY-r.top)*H/r.height});
+ C.addEventListener('mousedown',e=>{if(e.button===0){mouse.down=true;keys.add('Mouse0');if((state==='game'||state==='satanFight')&&!paused&&!cutscene.active)throwMolotov(mouse.x,mouse.y)}});
+ window.addEventListener('mouseup',()=>{mouse.down=false;keys.delete('Mouse0')});
+ document.getElementById('startBtn').onclick=()=>{document.getElementById('menu').classList.add('hidden');beginGame()};
+ document.getElementById('adminBtn').onclick=adminOpen;
+ document.getElementById('replayBtn').onclick=()=>beginGame();
+ document.getElementById('deathMenuBtn').onclick=()=>{hideDeathScreen();document.getElementById('menu').classList.remove('hidden');state='menu';paused=false;};
+ document.getElementById('adminClose').onclick=adminClose;
+ document.getElementById('godToggle').onclick=()=>{admin.damageOff=!admin.damageOff;setAdminStatus(admin.damageOff?'The boy cannot be wounded.':'The boy can be wounded.');refreshAdminUI();updateHUD()};
+ document.getElementById('mollyToggle').onclick=()=>{admin.unlimitedMolotovs=!admin.unlimitedMolotovs;if(admin.unlimitedMolotovs&&player)player.molotovs=99;setAdminStatus(admin.unlimitedMolotovs?'The satchel never empties.':'The satchel follows ordinary limits.');refreshAdminUI();updateHUD()};
+ document.getElementById('skipNext').onclick=()=>adminSkip(stage+1);
+ document.getElementById('skipFinal').onclick=()=>adminSkip(8);
+}
+function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;if(state==='cutscene'){updateTransition(dt)}else if(state==='satanFight')updateSatan(dt);else update(dt);if(state==='cutscene')drawCutscene();else draw();requestAnimationFrame(loop)}
+bind();requestAnimationFrame(loop);
+</script>
+</body>
+</html>
