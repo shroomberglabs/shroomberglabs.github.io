@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="origin">
+    <meta name="theme-color" content="#073b20">
+    <meta name="description" content="Explore Shroomberg Maps, a source-backed directory of providers, services, research, and locations.">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https:; connect-src 'self' https://*.workers.dev https://api.shroomberg.com http://localhost:* https://nominatim.openstreetmap.org; font-src 'self' data: https:; object-src 'none'; base-uri 'self'; form-action 'self' https:; frame-ancestors 'none'">
+    <title>Shroomberg Maps — provider directory</title>
+    <link rel="preload" href="./shroomberg-logo.png" as="image" type="image/png">
+    <link rel="icon" href="./shroomberg-logo.png" type="image/png">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+    <link rel="stylesheet" href="./styles.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+    <script src="./worker-config.js" defer></script>
+    <script src="./app.js" defer></script>
+    <script src="./community.js" defer></script>
+  </head>
+  <body>
+    <div class="brand-splash" aria-hidden="true">
+      <div class="brand-splash-lockup">
+        <img src="./shroomberg-logo.png" alt="">
+      </div>
+    </div>
+    <header class="site-header">
+      <a class="brand" href="#map-page" data-open-panel="map-page" aria-label="Shroomberg Maps home">
+        <span class="brand-mark" aria-hidden="true"><img src="./shroomberg-logo.png" alt=""></span>
+      </a>
+      <div class="header-right">
+        <a class="header-link" href="#map-page" data-open-panel="map-page" aria-current="page">Map</a>
+        <a class="header-link" href="#account-panel" data-open-panel="account-panel" data-auth-mode="signin">Login</a>
+        <a class="header-link" href="#account-panel" data-open-panel="account-panel" data-auth-mode="signup">Join</a>
+        <a class="header-link" href="#support-panel" data-open-panel="support-panel" aria-label="Request support">Help</a>
+        <a class="header-link" href="#data-panel" data-open-panel="data-panel">Data</a>
+        <a class="header-link" href="#faq-panel" data-open-panel="faq-panel">FAQ</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <div id="site-page-stage" class="site-page-stage">
+      <section id="map-page" class="site-page map-page" aria-label="OpenStreetMap provider map" tabindex="-1">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="eyebrow-dot"></span>Explore with context</p>
+          <h1>Find the right<br><em>place to start.</em></h1>
+          <p class="hero-description">Search providers, services, research, and locations from one carefully sourced directory.</p>
+        </div>
+        <div class="hero-stats" aria-label="Directory coverage">
+          <div class="stat"><strong id="stat-providers">—</strong><span>provider records</span></div>
+          <div class="stat"><strong id="stat-addresses">—</strong><span>address entries</span></div>
+          <div class="stat"><strong id="stat-websites">—</strong><span>websites recorded</span></div>
+        </div>
+      </section>
+
+
+
+      <section class="map-card" aria-label="OpenStreetMap provider map">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">OpenStreetMap</p><h2>Provider map</h2></div>
+          <span class="map-badge">OSM</span>
+        </div>
+        <button id="directory-search-toggle" class="button button-outline directory-search-toggle" type="button" aria-expanded="false" aria-controls="directory-search-content" style="display:flex;width:100%;justify-content:space-between;align-items:center;margin:0 0 10px;text-align:left">
+          Search providers &amp; filters <span data-toggle-state aria-hidden="true">Show</span>
+        </button>
+        <div id="directory-search-content" class="directory-search-content" hidden>
+          <div class="directory-search-inner">
+      <section id="directory" class="search-shell directory-search-shell" aria-label="Search and filters">
+        <label class="search-box" for="search-input">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="search-input" type="search" placeholder="Search all fields or try country:CA has:address" autocomplete="off" aria-describedby="search-help search-feedback">
+          <kbd>/</kbd>
+        </label>
+        <p id="search-help" class="map-policy">Search across the full record. Try <code>country:CA category:research has:address</code>, quote phrases, or exclude terms with <code>-</code>. Filters use AND logic.</p>
+        <p id="search-feedback" class="map-message error" role="alert" hidden></p>
+        <div class="filter-row">
+          <label class="filter-control"><span>Category</span><select id="category-filter"><option value="">All categories</option></select></label>
+          <label class="filter-control"><span>Country</span><select id="country-filter"><option value="">Everywhere</option></select></label>
+          <label class="filter-control"><span>Region</span><select id="region-filter"><option value="">All regions</option></select></label>
+          <label class="filter-control"><span>Listing status</span>
+            <select id="status-filter">
+              <option value="">Any listing</option>
+              <option value="address">Address recorded</option>
+              <option value="missing-address">Address not found</option>
+              <option value="missing-website">Website not verified</option>
+              <option value="online">Online only</option>
+              <option value="verified">Operating status verified</option>
+            </select>
+          </label>
+          <button id="clear-filters" class="clear-button" type="button">Clear</button>
+        </div>
+      </section>
+          <form id="map-search-form" class="place-search-form" aria-label="Search providers and places on the map">
+            <label class="search-box" for="map-search-input">
+              <span class="search-icon" aria-hidden="true">⌕</span>
+              <input id="map-search-input" type="search" placeholder="Search a provider, address, city, or place" autocomplete="off" aria-describedby="map-search-help">
+            </label>
+            <div class="map-actions">
+              <button class="button button-primary" type="submit">Search map</button>
+              <button id="reset-map" class="button button-outline" type="button">Reset map</button>
+            </div>
+            <p id="map-search-help" class="map-policy">Searches matching provider records first; if none match, it searches OpenStreetMap for a place.</p>
+          </form>
+        </div>
+          </div>
+        <div class="provider-type-filter" id="provider-type-filters" role="group" aria-labelledby="provider-type-heading">
+          <p id="provider-type-heading" class="map-policy">Provider type · retail and healing experiences selected by default</p>
+          <div class="provider-type-row">
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="retail" checked><span>Retail stores <small data-provider-type-count="retail"></small></span></label>
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="healing" checked><span>Healing centers &amp; paid experiences <small data-provider-type-count="healing"></small></span></label>
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="online"><span>Online shops <small data-provider-type-count="online"></small></span></label>
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="medical"><span>Medical &amp; therapy <small data-provider-type-count="medical"></small></span></label>
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="institutions"><span>Research institutions <small data-provider-type-count="institutions"></small></span></label>
+            <label class="provider-type-option"><input type="checkbox" data-provider-type="suppliers"><span>Suppliers <small data-provider-type-count="suppliers"></small></span></label>
+          </div>
+        </div>
+
+        <div class="map-canvas-wrap" style="position:relative">
+          <div id="map" role="region" aria-label="OpenStreetMap provider map"></div>
+          <div id="map-matches" class="map-matches" role="region" aria-label="Matching provider profiles" aria-live="polite" hidden style="position:absolute;z-index:1000;top:12px;left:12px;width:min(360px,calc(100% - 24px));max-height:calc(100% - 24px);margin:0;overflow:auto;box-shadow:0 8px 24px rgba(22,56,46,.18)"></div>
+        </div>
+        <div class="map-message" id="map-message" role="status" aria-live="polite">Loading provider map…</div>
+        <p class="map-policy">Markers show approximate service-zone centers, not verified storefront coordinates. Map tiles and place searches use OpenStreetMap. Public Nominatim searches follow its one-request-per-second policy. <a href="https://operations.osmfoundation.org/policies/nominatim/" target="_blank" rel="noopener noreferrer">Usage policy</a>.</p>
+        <a class="map-issue-link" href="https://www.openstreetmap.org/fixthemap" target="_blank" rel="noopener noreferrer">Report a map issue ↗</a>
+      </section>
+
+      <dialog id="provider-profile-dialog" class="provider-profile-dialog" aria-labelledby="provider-profile-dialog-title" style="width:min(760px,calc(100vw - 24px));max-height:min(90vh,900px);overflow:auto;border:1px solid #dfe6da;border-radius:15px;padding:15px;background:#fff;box-shadow:0 18px 60px rgba(16,39,32,.28)">
+        <div class="profile-dialog-shell">
+          <div class="profile-dialog-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px">
+            <h2 id="provider-profile-dialog-title">Provider profile</h2>
+            <button id="close-profile" class="button button-outline" type="button">Close</button>
+          </div>
+          <section id="provider-detail" class="provider-detail" aria-live="polite"></section>
+        </div>
+      </dialog>
+      </section>
+
+      <section id="account-panel" class="search-shell site-page community-panel" aria-labelledby="account-heading" hidden tabindex="-1">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">Shroomberg account</p><h2 id="account-heading">Join the community</h2></div>
+          <button class="clear-button" type="button" data-close-panel>Close</button>
+        </div>
+        <p id="auth-configuration-note" class="map-policy" role="status"></p>
+        <div id="account-signed-out">
+          <form id="account-form" novalidate>
+            <div class="filter-row">
+              <label class="filter-control"><span>Email</span><input id="account-email-input" class="search-box" type="email" name="email" autocomplete="email" required maxlength="254"></label>
+              <label class="filter-control"><span>Password</span><input id="account-password-input" class="search-box" type="password" name="password" autocomplete="current-password" required minlength="8" maxlength="128"></label>
+            </div>
+            <div class="map-actions">
+              <button id="account-submit" class="button button-primary" type="submit">Sign in</button>
+              <button id="account-mode-toggle" class="button button-outline" type="button">Create an account</button>
+              <button id="password-reset" class="button button-outline" type="button">Reset password</button>
+            </div>
+            <p id="account-status" class="map-message" role="status" aria-live="polite"></p>
+          </form>
+          <form id="password-update-form" hidden>
+            <label class="filter-control"><span>New password</span><input id="new-password-input" class="search-box" type="password" name="new_password" autocomplete="new-password" required minlength="8" maxlength="128"></label>
+            <div class="map-actions"><button class="button button-primary" type="submit">Update password</button></div>
+            <p id="password-update-status" class="map-message" role="status" aria-live="polite"></p>
+          </form>
+          <div class="provider-entry">
+            <p class="map-policy">Provider or facilitator? Start an application to add or claim a listing.</p>
+            <button class="button button-outline" type="button" data-open-panel="provider-panel">Start provider onboarding</button>
+          </div>
+        </div>
+        <div id="account-signed-in" hidden>
+          <p class="map-message">Signed in as <strong id="account-email"></strong>.</p>
+          <div class="map-actions">
+            <button class="button button-primary" type="button" data-open-panel="provider-panel">Start provider onboarding</button>
+            <button id="sign-out" class="button button-outline" type="button">Sign out</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="provider-panel" class="search-shell site-page community-panel" aria-labelledby="provider-panel-heading" hidden tabindex="-1">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">Provider onboarding</p><h2 id="provider-panel-heading">Apply to join the directory</h2></div>
+          <button class="clear-button" type="button" data-close-panel>Close</button>
+        </div>
+        <p class="map-policy">Provider submissions are private and reviewed before publication. They do not automatically change the source workbook or public directory.</p>
+        <p id="provider-login-required" class="map-message" hidden>Sign in or create an account to submit a provider application. <a href="#account-panel" data-open-panel="account-panel">Open account</a></p>
+        <form id="provider-form" hidden>
+          <input id="provider-target-id" name="target_provider_id" type="hidden">
+          <div class="filter-row">
+            <label class="filter-control"><span>Provider or organization name</span><input id="provider-name" class="search-box" name="provider_name" required minlength="2" maxlength="240" autocomplete="organization"></label>
+            <label class="filter-control"><span>Provider type</span>
+              <select id="provider-type" name="provider_type" required>
+                <option value="">Choose a type</option><option value="retail">Retail</option><option value="online_retail">Online retail</option><option value="medical">Medical</option><option value="supervised">Supervised services</option><option value="retreat">Retreat</option><option value="research">Research</option><option value="supplier">Supplier</option><option value="access">Access and advocacy</option><option value="other">Other</option>
+              </select>
+            </label>
+          </div>
+          <div class="filter-row">
+            <label class="filter-control"><span>Country code (2 letters)</span><input id="provider-country" class="search-box" name="country_code" required pattern="[A-Za-z]{2}" maxlength="2" placeholder="US" autocomplete="country"></label>
+            <label class="filter-control"><span>Operating state, province, or region</span><input id="provider-region" class="search-box" name="operating_region" required maxlength="160" autocomplete="address-level1"></label>
+          </div>
+          <div class="filter-row">
+            <label class="filter-control"><span>City (optional)</span><input id="provider-city" class="search-box" name="city" maxlength="160" autocomplete="address-level2"></label>
+            <label class="filter-control"><span>Street address (optional)</span><input id="provider-street" class="search-box" name="street_address" maxlength="400" autocomplete="street-address"></label>
+          </div>
+          <div class="filter-row">
+            <label class="filter-control"><span>Postal code (optional)</span><input id="provider-postal" class="search-box" name="postal_code" maxlength="40" autocomplete="postal-code"></label>
+            <label class="filter-control"><span>Service area (optional)</span><input id="provider-service-area" class="search-box" name="service_area" maxlength="400" placeholder="For regional or online services"></label>
+          </div>
+          <div class="filter-row">
+            <label class="filter-control"><span>Website (optional)</span><input id="provider-website" class="search-box" name="website" type="url" maxlength="2048" placeholder="https://example.org" autocomplete="url"></label>
+            <label class="filter-control"><span>Provider contact email (optional)</span><input id="provider-contact-email" class="search-box" name="contact_email" type="email" maxlength="254" autocomplete="email"></label>
+          </div>
+          <div class="filter-row">
+            <label class="filter-control"><span>Phone (optional)</span><input id="provider-phone" class="search-box" name="phone" type="tel" maxlength="80" autocomplete="tel"></label>
+            <label class="filter-control"><span>License or registration details (optional)</span><input id="provider-license" class="search-box" name="license_information" maxlength="1200"></label>
+          </div>
+          <label class="filter-control"><span>Services and provider description</span><textarea id="provider-description" name="services_description" rows="5" minlength="30" maxlength="3000" required></textarea></label>
+          <p id="provider-claim-context" class="map-policy">To claim an existing directory entry, open its profile and choose “Claim this listing.”</p>
+          <label><input id="provider-authorized" type="checkbox" required> I am authorized to submit this information on behalf of the provider.</label>
+          <div class="detail-location">
+            <strong id="disclaimer-title">Provider responsibility and liability disclaimer</strong>
+            <p id="disclaimer-body">Loading the current disclaimer…</p>
+            <p id="disclaimer-version" class="type-note"></p>
+          </div>
+          <label class="filter-control"><span>Type your full legal name to sign</span><input id="provider-signature" class="search-box" name="signature_name" required minlength="2" maxlength="160" autocomplete="name"></label>
+          <label><input id="provider-signature-consent" type="checkbox" required> I intend my typed name and this submission to serve as my electronic signature for the disclaimer version shown above.</label>
+          <div class="map-actions"><button id="provider-submit" class="button button-primary" type="submit" disabled>Submit signed application</button></div>
+          <p id="provider-status" class="map-message" role="status" aria-live="polite"></p>
+        </form>
+        <div class="detail-section">
+          <h3>Your provider applications</h3>
+          <div id="provider-application-history" class="map-message" aria-live="polite">Sign in to view your submissions.</div>
+        </div>
+      </section>
+
+      <section id="support-panel" class="search-shell site-page community-panel" aria-labelledby="support-heading" hidden tabindex="-1">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">Support</p><h2 id="support-heading">How can we help?</h2></div>
+          <button class="clear-button" type="button" data-close-panel>Close</button>
+        </div>
+        <p class="map-policy">Support requests are private to your account and are reviewed by the Shroomberg team.</p>
+        <p id="support-login-required" class="map-message" hidden>Sign in or create an account to contact support. <a href="#account-panel" data-open-panel="account-panel">Open account</a></p>
+        <form id="support-form" hidden>
+          <div class="filter-row">
+            <label class="filter-control"><span>Request type</span><select id="support-type" name="request_type" required><option value="account">Account</option><option value="listing">Directory listing</option><option value="review">Review</option><option value="accessibility">Accessibility</option><option value="other">Other</option></select></label>
+            <label class="filter-control"><span>Subject</span><input id="support-subject" class="search-box" name="subject" required minlength="5" maxlength="140"></label>
+          </div>
+          <label class="filter-control"><span>What happened?</span><textarea id="support-message" name="message" rows="6" minlength="20" maxlength="4000" required></textarea></label>
+          <div class="map-actions"><button class="button button-primary" type="submit">Send support request</button></div>
+          <p id="support-status" class="map-message" role="status" aria-live="polite"></p>
+        </form>
+        <div class="detail-section">
+          <h3>Your recent requests</h3>
+          <div id="support-history" class="map-message" aria-live="polite">Sign in to view your requests.</div>
+        </div>
+      </section>
+
+      <section id="faq-panel" class="search-shell site-page community-panel" aria-labelledby="faq-heading" hidden tabindex="-1">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">Shroomberg Maps</p><h2 id="faq-heading">Frequently asked questions</h2></div>
+          <button class="clear-button" type="button" data-close-panel>Close</button>
+        </div>
+        <div class="faq-list">
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-about">What is Shroomberg Maps?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-about" hidden><p>A source-linked directory for exploring providers, services, research, and related locations. It is an information tool, not medical advice or a guarantee that a listing is currently operating.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-markers">What does a map marker mean?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-markers" hidden><p>Markers show saved coordinates or an approximate service-area center. They do not independently verify a storefront, operating status, or permission to visit.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-missing">Why is a street address or website missing?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-missing" hidden><p>The source audit did not include a verified public address or website for that record. Some services operate across a region rather than at one public venue; profiles show the documented region when available.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-verification">Are all providers and locations verified?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-verification" hidden><p>No. Records include source and verification context, and information can change. Check the provider’s own current information before making plans.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-onboarding">How do I submit or claim a provider listing?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-onboarding" hidden><p>Choose Join, then Start provider onboarding. You will sign in or create an account, complete the provider form, and review and e-sign the provider responsibility disclaimer. Submissions are reviewed before publication.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-reviews">How do reviews work?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-reviews" hidden><p>Signed-in users can submit one review per provider. Reviews are moderated before publication and may not be available for every listing.</p></div></div>
+          <div class="faq-item"><button class="faq-question" type="button" aria-expanded="false" aria-controls="faq-answer-corrections">How do I report an issue or request a correction?<span aria-hidden="true">+</span></button><div class="faq-answer" id="faq-answer-corrections" hidden><p>Choose Help and send a support request. Include the provider name, the issue, and a reliable source link when possible. Submissions do not automatically edit the directory.</p></div></div>
+        </div>
+      </section>
+
+      <section id="data-panel" class="search-shell site-page community-panel" aria-labelledby="data-heading" hidden tabindex="-1">
+        <div class="panel-heading">
+          <div><p class="eyebrow small-eyebrow">About this directory</p><h2 id="data-heading">Useful details. Clear provenance.</h2></div>
+          <button class="clear-button" type="button" data-close-panel>Close</button>
+        </div>
+        <div class="about-copy">
+          <p>Provider records and their source links come from the Shroomberg location audit. Address labels distinguish storefronts, clinics, research sites, mailing addresses, registered offices, facilities, and historical entries. The directory is designed to support additional provider and service types as the dataset grows.</p>
+          <p>When a provider has no single venue, the listing uses its documented state, province, parish, or operating region. An OSM marker is a map lookup result, not a new address verification. Region-only points represent an area, not a specific provider site.</p>
+          <p class="about-date">Data snapshot: <strong id="data-as-of">—</strong>. Blank website fields mean no verified public URL was attached to that record in the audit.</p>
+        </div>
+      </section>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <a class="brand footer-brand" href="#map-page" data-open-panel="map-page" aria-label="Shroomberg Maps home"><span class="brand-mark" aria-hidden="true"><img src="./shroomberg-logo.png" alt=""></span></a>
+      <span>Directory data is informational and source-linked.</span>
+      <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>
+    </footer>
+  </body>
+</html>
