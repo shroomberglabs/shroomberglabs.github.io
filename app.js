@@ -1,1601 +1,853 @@
 (() => {
   "use strict";
 
-  const DATA_URL = "./providers.json";
-  const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-  const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
-  const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-  const REQUEST_INTERVAL_MS = 1100;
-  const MAP_RESULT_LIMIT = 20;
-  const CITY_PRECISION_ZOOM = 5;
-  const ADDRESS_PRECISION_ZOOM = 11;
-  const CITY_LOOKUP_BATCH = 6;
-  const ADDRESS_LOOKUP_BATCH = 8;
-  const coarseResultTypes = new Set(["country", "state", "province", "region", "county", "city", "town", "village", "municipality", "hamlet"]);
-  const categoryNames = {
-    access: "Access & advocacy",
-    medical: "Medical",
-    online_retail: "Online retail",
-    research: "Research",
-    retail: "Retail",
-    retreat: "Retreats",
-    supervised: "Supervised services",
-    supplier: "Suppliers"
-  };
-  const providerTypeCategories = {
-    retail: ["retail"],
-    healing: ["supervised", "retreat"],
-    online: ["online_retail"],
-    medical: ["medical", "access"],
-    institutions: ["research"],
-    suppliers: ["supplier"]
-  };
-  const categoryProviderType = Object.fromEntries(
-    Object.entries(providerTypeCategories).flatMap(([type, categories]) => categories.map((category) => [category, type]))
-  );
-  const addressNames = {
-    medical_clinic: "Clinic",
-    mailing_address: "Mailing address",
-    registered_office: "Registered office",
-    industrial_facility: "Facility / warehouse",
-    research_institution: "Research institution",
-    supervised_service_site: "Supervised service site",
-    retail_storefront: "Retail storefront",
-    retreat_venue: "Retreat venue",
-    other: "Historical / other address",
-    unclassified: "Address type unclassified"
-  };
-  const aliases = {
-    country: ["countryCode"],
-    state: ["region"],
-    province: ["region"],
-    address: ["streetAddress", "postalCode"],
-    street: ["streetAddress"],
-    postal: ["postalCode"],
-    zip: ["postalCode"],
-    kind: ["addressKind"],
-    type: ["addressKind"],
-    status: ["addressStatus", "websiteStatus", "followUpStatus"],
-    evidence: ["addressEvidenceLevel", "addressEvidenceUrl", "websiteEvidenceUrl", "verificationSourceUrl"],
-    source: ["addressEvidenceUrl", "websiteEvidenceUrl", "sourceUrl", "verificationSourceUrl", "researchNoteSourceUrl"],
-    location: ["city", "region", "countryCode", "streetAddress", "postalCode", "locationContext"],
-    online: ["isOnlineOnly"],
-    verified: ["businessOperatingVerified"],
-    followup: ["followUpStatus", "followUpReason"],
-    updated: ["updatedAt"],
-    contact: ["contactReviewedAt"]
-  };
-  const hasAliases = new Set(["address", "website", "source", "region", "location", "evidence", "online", "verified", "service", "notes", "closed"]);
-  const $ = (selector) => document.querySelector(selector);
-  const els = {
-    search: $("#search-input"), searchFeedback: $("#search-feedback"),
-    category: $("#category-filter"), country: $("#country-filter"), region: $("#region-filter"),
-    status: $("#status-filter"), detail: $("#provider-detail"),
-    searchToggle: $("#directory-search-toggle"), searchContent: $("#directory-search-content"),
-    profileDialog: $("#provider-profile-dialog"), closeProfile: $("#close-profile"),
-    mapMessage: $("#map-message"), mapMatches: $("#map-matches"), mapSearchForm: $("#map-search-form"),
-    mapSearch: $("#map-search-input"), mapSearchButton: $("#map-search-form button[type='submit']"),
-    resetMap: $("#reset-map"), clear: $("#clear-filters")
-  };
-
-  const countryNames = (() => {
-    try { return new Intl.DisplayNames(["en"], { type: "region" }); }
-    catch { return null; }
-  })();
-  const countryLabel = (code) => {
-    if (!code) return "";
-    try { return countryNames?.of(code) || code; } catch { return code; }
-  };
+  const $ = (selector, root = document) => root.querySelector(selector);
   const clean = (value) => String(value ?? "").trim();
-  const normalizeKey = (value) => String(value ?? "").toLocaleLowerCase().replace(/[^a-z0-9]/g, "");
-  const categoryLabel = (value) => categoryNames[value] || value || "Uncategorized";
-  const locationText = (provider) => [clean(provider.city), clean(provider.region), countryLabel(clean(provider.countryCode))].filter(Boolean).join(", ");
-  const humanize = (value) => String(value ?? "")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^./, (letter) => letter.toLocaleUpperCase())
-    .replace(/\burl\b/gi, "URL")
-    .replace(/\buri\b/gi, "URI")
-    .replace(/\bosm\b/gi, "OSM");
-  const safeHttpUrl = (raw) => {
+  const pages = [...document.querySelectorAll(".site-page")];
+  const mapPage = $("#map-page");
+  const navLinks = [...document.querySelectorAll(".header-link[data-open-panel]")];
+  const swipeDirections = ["left", "right"];
+  const faqCloseTimers = new WeakMap();
+  const config = window.SHROOMBERG_WORKER_CONFIG;
+  const SESSION_KEY = "shroomberg.session.v1";
+  let workerOrigin = "";
+  let authSession = null;
+  let refreshInFlight = null;
+  let passwordRecovery = false;
+  let authReady = false;
+  try {
+    if (config?.apiUrl?.trim()) {
+      const workerUrl = new URL(config.apiUrl.trim());
+      const isLocalWorker = ["localhost", "127.0.0.1", "[::1]"].includes(workerUrl.hostname);
+      if ((workerUrl.protocol === "https:" || (workerUrl.protocol === "http:" && isLocalWorker)) &&
+          workerUrl.pathname === "/" && !workerUrl.search && !workerUrl.hash && !workerUrl.username && !workerUrl.password) {
+        workerOrigin = workerUrl.origin;
+      }
+    }
+  } catch {
+    // Public directory browsing remains available until the Worker URL is configured.
+  }
+
+  function storedSession() {
     try {
-      const url = new URL(String(raw));
-      return url.protocol === "https:" || url.protocol === "http:" ? url.href : "";
-    } catch { return ""; }
-  };
-  const makeLink = (raw, label, className = "source-link") => {
-    const href = safeHttpUrl(raw);
-    if (!href) return null;
-    const link = document.createElement("a");
-    link.className = className;
-    link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.textContent = label;
-    return link;
-  };
-  const mapQuery = (provider) => [
-    clean(provider.streetAddress), clean(provider.city), clean(provider.region),
-    countryLabel(clean(provider.countryCode)), clean(provider.postalCode)
-  ].filter(Boolean).join(", ");
-  const openStreetMapSearch = (provider) => "https://www.openstreetmap.org/search?query=" + encodeURIComponent(mapQuery(provider) || locationText(provider));
-  const flattenValue = (value) => {
-    if (value === null || value === undefined || value === "") return [];
-    if (Array.isArray(value)) return value.flatMap(flattenValue);
-    if (typeof value === "object") return Object.entries(value).flatMap(([key, item]) => [key, ...flattenValue(item)]);
-    return [String(value)];
-  };
-
-  let providers = [];
-  let filtered = [];
-  let selectedId = "";
-  let map;
-  let marker;
-  let searchMarkerLayer;
-  let precisionLayer;
-  let searchMapTimer = 0;
-  let searchMapGeneration = 0;
-  let precisionRefreshTimer = 0;
-  let precisionGeneration = 0;
-  let precisionPoints = new Map();
-  let activeMapRecords = [];
-  let searchPanelTimer = 0;
-  let profileCloseTimer = 0;
-  const searchPins = new Map();
-  let lastGeocodeAt = 0;
-  let geocodeQueue = Promise.resolve();
-  let mapSearchBusy = false;
-  const geocodeMemory = new Map();
-  const searchIndex = new WeakMap();
-
-  function setMapMessage(message, isError = false) {
-    if (els.mapMessage.textContent !== message) {
-      els.mapMessage.classList.remove("is-refreshing");
-      void els.mapMessage.offsetWidth;
-      els.mapMessage.textContent = message;
-      els.mapMessage.classList.add("is-refreshing");
-    }
-    els.mapMessage.classList.toggle("error", Boolean(isError));
-  }
-
-  function setSearchFeedback(message = "") {
-    els.searchFeedback.textContent = message;
-    els.searchFeedback.hidden = !message;
-  }
-
-  function initMap() {
-    if (!window.L) {
-      setMapMessage("The interactive map did not load. Provider profiles still include direct OpenStreetMap links.", true);
-      return;
-    }
-    try {
-      map = window.L.map("map", { scrollWheelZoom: false, zoomControl: true }).setView([22, 0], 2);
-      const mapContainer = map.getContainer();
-      mapContainer.style.height = window.innerWidth <= 660 ? "min(60vh, 520px)" : "min(72vh, 760px)";
-      mapContainer.style.minHeight = window.innerWidth <= 660 ? "300px" : "460px";
-      window.L.tileLayer(OSM_TILE_URL, {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>'
-      }).addTo(map);
-      searchMarkerLayer = window.L.layerGroup().addTo(map);
-      precisionLayer = window.L.layerGroup().addTo(map);
-      map.on("zoomend moveend", scheduleMapPrecisionRefresh);
-      window.setTimeout(() => map.invalidateSize(), 100);
-    } catch {
-      map = null;
-      setMapMessage("The interactive map could not start. Provider profiles still include direct OpenStreetMap links.", true);
-    }
-  }
-
-  function setStats(records) {
-    const addressCount = records.filter((provider) => clean(provider.streetAddress)).length;
-    const websiteCount = records.filter((provider) => safeHttpUrl(provider.website)).length;
-    $("#stat-providers").textContent = records.length.toLocaleString();
-    $("#stat-addresses").textContent = addressCount.toLocaleString();
-    $("#stat-websites").textContent = websiteCount.toLocaleString();
-  }
-
-  function formatSnapshotDate(value) {
-    const raw = clean(value);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw || "Not recorded";
-    const date = new Date(`${raw}T00:00:00Z`);
-    if (Number.isNaN(date.getTime())) return raw;
-    return date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric", timeZone: "UTC" });
-  }
-
-  function populateFilters() {
-    const categories = [...new Set(providers.map((provider) => clean(provider.category)).filter(Boolean))].sort();
-    const countries = [...new Set(providers.map((provider) => clean(provider.countryCode)).filter(Boolean))]
-      .sort((a, b) => countryLabel(a).localeCompare(countryLabel(b)));
-    els.category.replaceChildren(new Option("All categories", ""));
-    els.country.replaceChildren(new Option("Everywhere", ""));
-    for (const category of categories) els.category.add(new Option(categoryLabel(category), category));
-    for (const country of countries) els.country.add(new Option(countryLabel(country), country));
-    updateRegionOptions();
-  }
-
-  function updateRegionOptions() {
-    const prior = els.region.value;
-    const country = els.country.value;
-    const regions = [...new Set(providers
-      .filter((provider) => !country || clean(provider.countryCode) === country)
-      .map((provider) => clean(provider.region)).filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b));
-    els.region.replaceChildren(new Option("All regions", ""));
-    for (const region of regions) els.region.add(new Option(region, region));
-    if (regions.includes(prior)) els.region.value = prior;
-  }
-
-  function recordSearchText(provider) {
-    if (!searchIndex.has(provider)) {
-      const values = [];
-      for (const [key, value] of Object.entries(provider)) {
-        values.push(key, humanize(key), ...flattenValue(value));
-      }
-      if (provider.countryCode) values.push(countryLabel(clean(provider.countryCode)));
-      if (provider.category) values.push(categoryLabel(clean(provider.category)));
-      if (provider.addressKind) values.push(addressNames[provider.addressKind] || humanize(provider.addressKind));
-      searchIndex.set(provider, values.join(" ").toLocaleLowerCase());
-    }
-    return searchIndex.get(provider);
-  }
-
-  function lexQuery(query) {
-    const tokens = [];
-    let current = "";
-    let quoted = false;
-    for (const character of clean(query)) {
-      if (character === '"') {
-        quoted = !quoted;
-        continue;
-      }
-      if (/\s/.test(character) && !quoted) {
-        if (current) tokens.push(current);
-        current = "";
-      } else current += character;
-    }
-    if (quoted) return { error: "Close the quoted phrase, then try your search again." };
-    if (current) tokens.push(current);
-    return { tokens };
-  }
-
-  function resolveFieldKeys(field) {
-    const normalized = normalizeKey(field);
-    const aliasKey = Object.keys(aliases).find((key) => normalizeKey(key) === normalized);
-    if (aliasKey) return aliases[aliasKey].filter((key) => providers.some((provider) => Object.hasOwn(provider, key)));
-    const keys = providers.length ? Object.keys(providers[0]) : [];
-    const exact = keys.find((key) => normalizeKey(key) === normalized);
-    return exact ? [exact] : [];
-  }
-
-  function parseQuery(query) {
-    const lexed = lexQuery(query);
-    if (lexed.error) return { tokens: [], error: lexed.error };
-    const tokens = [];
-    for (const original of lexed.tokens) {
-      const negative = original.startsWith("-") && original.length > 1;
-      const raw = negative ? original.slice(1) : original;
-      const colon = raw.indexOf(":");
-      if (colon > 0) {
-        const field = raw.slice(0, colon);
-        const value = raw.slice(colon + 1);
-        if (/^https?$/i.test(field)) {
-          tokens.push({ kind: "text", value: raw.toLocaleLowerCase(), negative });
-          continue;
-        }
-        if (!/^[a-z][a-z0-9_.-]*$/i.test(field)) {
-          tokens.push({ kind: "text", value: raw.toLocaleLowerCase(), negative });
-          continue;
-        }
-        if (!value) return { tokens: [], error: `Add a value after “${field}:” (for example, “country:CA”).` };
-        const normalized = normalizeKey(field);
-        if (normalized === "has" || normalized === "is") {
-          const valueKey = normalizeKey(value);
-          if (normalized === "has" && !hasAliases.has(valueKey) && !resolveFieldKeys(value).length) {
-            return { tokens: [], error: `“has:${value}” is not a recognized field. Try has:address, has:website, or has:source.` };
-          }
-          if (normalized === "is" && !["online", "verified", "closed"].includes(valueKey)) {
-            return { tokens: [], error: `“is:${value}” is not supported. Try is:online, is:verified, or is:closed.` };
-          }
-          tokens.push({ kind: normalized, value: valueKey, negative });
-          continue;
-        }
-        const keys = resolveFieldKeys(field);
-        if (!keys.length) {
-          return { tokens: [], error: `I don't recognize “${field}:” as a filter. Try name, category, country, region, city, address, website, status, kind, evidence, source, or a workbook field name.` };
-        }
-        tokens.push({ kind: "field", keys, value: value.toLocaleLowerCase(), negative });
-        continue;
-      }
-      tokens.push({ kind: "text", value: raw.toLocaleLowerCase(), negative });
-    }
-    return { tokens, error: "" };
-  }
-
-  function fieldValues(provider, keys) {
-    const values = [];
-    for (const key of keys) {
-      const value = provider[key];
-      values.push(...flattenValue(value));
-      if (key === "countryCode" && value) values.push(countryLabel(clean(value)));
-      if (key === "category" && value) values.push(categoryLabel(clean(value)));
-      if (key === "addressKind" && value) values.push(addressNames[value] || humanize(value));
-    }
-    return values.map((value) => String(value).toLocaleLowerCase());
-  }
-
-  function hasField(provider, requested) {
-    const value = normalizeKey(requested);
-    if (value === "address") return Boolean(clean(provider.streetAddress));
-    if (value === "website") return Boolean(safeHttpUrl(provider.website));
-    if (value === "source") return Object.entries(provider).some(([key, field]) => /(?:url|uri)$/i.test(key) && safeHttpUrl(field));
-    if (value === "region") return Boolean(clean(provider.region) || clean(provider.city));
-    if (value === "location") return Boolean(mapQuery(provider));
-    if (value === "evidence") return Boolean(clean(provider.addressEvidenceLevel) || clean(provider.addressEvidenceUrl) || clean(provider.websiteEvidenceUrl));
-    if (value === "online") return provider.isOnlineOnly === true;
-    if (value === "verified") return provider.businessOperatingVerified === true;
-    if (value === "service") return Boolean(clean(provider.category));
-    if (value === "notes") return Boolean(clean(provider.locationContext) || clean(provider.researchNote) || clean(provider.followUpReason));
-    if (value === "closed") return /closed|inactive|ceased|discontinued/i.test([provider.addressStatus, provider.websiteStatus, provider.followUpStatus, provider.followUpReason].map(clean).join(" "));
-    const keys = resolveFieldKeys(requested);
-    return keys.some((key) => flattenValue(provider[key]).some((item) => clean(item) !== ""));
-  }
-
-  function isFlag(provider, flag) {
-    if (flag === "online") return provider.isOnlineOnly === true;
-    if (flag === "verified") return provider.businessOperatingVerified === true;
-    if (flag === "closed") return /closed|inactive|ceased|discontinued/i.test([provider.addressStatus, provider.websiteStatus, provider.followUpStatus, provider.followUpReason].map(clean).join(" "));
-    return false;
-  }
-
-  function matchesQuery(provider, tokens) {
-    const fullText = recordSearchText(provider);
-    return tokens.every((token) => {
-      let matched = false;
-      if (token.kind === "text") matched = fullText.includes(token.value);
-      else if (token.kind === "field") matched = fieldValues(provider, token.keys).some((value) => value.includes(token.value));
-      else if (token.kind === "has") matched = hasField(provider, token.value);
-      else if (token.kind === "is") matched = isFlag(provider, token.value);
-      return token.negative ? !matched : matched;
-    });
-  }
-
-  function selectedProviderTypes() {
-    return [...document.querySelectorAll("[data-provider-type]:checked")].map((input) => input.dataset.providerType);
-  }
-
-  function providerMatchesSelectedTypes(provider, selected = selectedProviderTypes()) {
-    const type = categoryProviderType[clean(provider.category)];
-    return Boolean(type && selected.includes(type));
-  }
-
-  function updateProviderTypeCounts() {
-    const counts = Object.fromEntries(Object.keys(providerTypeCategories).map((type) => [type, 0]));
-    for (const provider of providers) {
-      const type = categoryProviderType[clean(provider.category)];
-      if (type) counts[type] += 1;
-    }
-    for (const [type, count] of Object.entries(counts)) {
-      const node = document.querySelector(`[data-provider-type-count="${type}"]`);
-      if (node) node.textContent = `(${count.toLocaleString()})`;
-    }
-  }
-
-  function includeCategoryProviderType(category) {
-    const type = categoryProviderType[clean(category)];
-    const input = type && document.querySelector(`[data-provider-type="${type}"]`);
-    if (input) input.checked = true;
-  }
-
-  function resetProviderTypeFilters() {
-    for (const input of document.querySelectorAll("[data-provider-type]")) {
-      input.checked = ["retail", "healing"].includes(input.dataset.providerType);
-    }
-  }
-
-  function getFiltered(tokens) {
-    const selectedTypes = selectedProviderTypes();
-    const category = els.category.value;
-    const country = els.country.value;
-    const region = els.region.value;
-    const status = els.status.value;
-    const rows = providers.filter((provider) => {
-      if (!providerMatchesSelectedTypes(provider, selectedTypes)) return false;
-      if (category && clean(provider.category) !== category) return false;
-      if (country && clean(provider.countryCode) !== country) return false;
-      if (region && clean(provider.region) !== region) return false;
-      if (status === "address" && !clean(provider.streetAddress)) return false;
-      if (status === "missing-address" && clean(provider.streetAddress)) return false;
-      if (status === "missing-website" && safeHttpUrl(provider.website)) return false;
-      if (status === "online" && provider.isOnlineOnly !== true) return false;
-      if (status === "verified" && provider.businessOperatingVerified !== true) return false;
-      if (!matchesQuery(provider, tokens)) return false;
-      return true;
-    });
-    rows.sort((a, b) => clean(a.name).localeCompare(clean(b.name)));
-    return rows;
-  }
-
-  function tag(text, style = "") {
-    const node = document.createElement("span");
-    node.className = "tag" + (style ? " " + style : "");
-    node.textContent = text;
-    return node;
-  }
-
-  function renderList() {
-    const parsed = parseQuery(els.search.value);
-    setSearchFeedback(parsed.error || "");
-    filtered = parsed.error ? [] : getFiltered(parsed.tokens);
-    const query = clean(els.search.value);
-    scheduleSearchMapUpdate(filtered, filtered.length, Boolean(parsed.error));
-    if (query && !parsed.error) renderProviderMapMatches(filtered, query);
-    else {
-      els.mapMatches.replaceChildren();
-      els.mapMatches.hidden = true;
-    }
-  }
-
-  function appendDetailSection(container, heading, text) {
-    if (!clean(text)) return;
-    const section = document.createElement("div");
-    section.className = "detail-section";
-    const h = document.createElement("h3");
-    h.textContent = heading;
-    const p = document.createElement("p");
-    p.textContent = clean(text);
-    section.append(h, p);
-    container.append(section);
-  }
-
-  function serviceAddressNote(provider) {
-    const kind = clean(provider.addressKind);
-    if (kind === "mailing_address") return "Mailing address. This is not evidence of a public service venue.";
-    if (kind === "registered_office") return "Registered or legal office. Visitor access is not confirmed.";
-    if (kind === "industrial_facility") return "Facility address. It may not be open to visitors or retail customers.";
-    if (kind === "other") return "Historical or other address. Read the source note before treating it as active.";
-    if (provider.addressEvidenceLevel === "third_party_directory") return "Address is listed by a third-party directory; confirm before visiting.";
-    return clean(provider.locationContext);
-  }
-
-  function clearProfile() {
-    selectedId = "";
-    window.clearTimeout(profileCloseTimer);
-    if (!els.profileDialog.open) {
-      els.profileDialog.classList.remove("is-closing");
-      window.ShroombergCommunity?.clearReviews();
-      return;
-    }
-    els.profileDialog.classList.add("is-closing");
-    profileCloseTimer = window.setTimeout(() => {
-      if (selectedId) return;
-      if (els.profileDialog.open) els.profileDialog.close();
-      els.profileDialog.classList.remove("is-closing");
-      window.ShroombergCommunity?.clearReviews();
-    }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 190);
-  }
-
-  function selectProvider(provider, options = {}) {
-    const { navigate = true } = options;
-    if (!provider) return;
-    window.clearTimeout(profileCloseTimer);
-    els.profileDialog.classList.remove("is-closing");
-    selectedId = provider.id;
-    renderDetail(provider);
-    window.ShroombergCommunity?.loadReviews(provider);
-    if (navigate) {
-      const route = `#provider/${encodeURIComponent(provider.id)}`;
-      if (window.location.hash !== route) window.history.pushState({ providerId: provider.id }, "", route);
-    }
-    if (!els.profileDialog.open) els.profileDialog.showModal();
-  }
-
-  function dismissProfile() {
-    if (providerFromHash()) window.history.pushState({}, "", "#map");
-    clearProfile();
-  }
-
-  function setSearchPanelOpen(open) {
-    window.clearTimeout(searchPanelTimer);
-    els.searchToggle.setAttribute("aria-expanded", String(open));
-    const state = els.searchToggle.querySelector("[data-toggle-state]");
-    if (state) state.textContent = open ? "Hide" : "Show";
-    if (open) {
-      els.searchContent.hidden = false;
-      els.searchContent.classList.remove("is-open");
-      window.requestAnimationFrame(() => {
-        if (els.searchToggle.getAttribute("aria-expanded") === "true") els.searchContent.classList.add("is-open");
-      });
-      window.setTimeout(() => els.search.focus(), 0);
-      if (map) window.setTimeout(() => map.invalidateSize(), 320);
-    } else {
-      els.searchContent.classList.remove("is-open");
-      searchPanelTimer = window.setTimeout(() => {
-        if (els.searchToggle.getAttribute("aria-expanded") === "false") els.searchContent.hidden = true;
-        if (map) map.invalidateSize();
-      }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 300);
-    }
-  }
-
-  function renderDetail(provider) {
-    const card = document.createElement("article");
-    card.className = "detail-content";
-    const back = document.createElement("button");
-    back.type = "button";
-    back.className = "button button-outline";
-    back.textContent = "← Back to map";
-    back.addEventListener("click", dismissProfile);
-    card.append(back);
-
-    const topline = document.createElement("div");
-    topline.className = "detail-topline";
-    const titleBox = document.createElement("div");
-    const category = document.createElement("p");
-    category.className = "detail-category";
-    category.textContent = categoryLabel(provider.category);
-    const title = document.createElement("h2");
-    title.id = "selected-provider-name";
-    title.textContent = clean(provider.name) || "Unnamed provider";
-    titleBox.append(category, title);
-    const country = tag(countryLabel(clean(provider.countryCode)) || "Location unknown", "soft");
-    topline.append(titleBox, country);
-    card.append(topline);
-
-    const location = document.createElement("div");
-    location.className = "detail-location";
-    const addressTitle = document.createElement("strong");
-    addressTitle.textContent = clean(provider.streetAddress) ? (addressNames[provider.addressKind] || "Recorded address") : "No street address verified";
-    const address = document.createElement("p");
-    address.textContent = [clean(provider.streetAddress), clean(provider.city), clean(provider.region), countryLabel(clean(provider.countryCode)), clean(provider.postalCode)].filter(Boolean).join(", ") || "No location is recorded.";
-    const note = document.createElement("p");
-    note.className = "type-note";
-    note.textContent = serviceAddressNote(provider) || "Use the recorded city or operating region as the location context.";
-    location.append(addressTitle, address, note);
-    card.append(location);
-
-    const actions = document.createElement("div");
-    actions.className = "detail-actions";
-    const mapButton = document.createElement("button");
-    mapButton.type = "button";
-    mapButton.className = "button button-primary";
-    mapButton.textContent = "Show on map";
-    mapButton.addEventListener("click", () => locateProvider(provider));
-    actions.append(mapButton);
-    const osmLink = makeLink(openStreetMapSearch(provider), "Open in OpenStreetMap ↗", "button button-outline");
-    if (osmLink) actions.append(osmLink);
-    const website = makeLink(provider.website, "Visit website ↗", "button button-outline");
-    if (website) actions.append(website);
-    const claim = document.createElement("button");
-    claim.type = "button";
-    claim.className = "button button-outline";
-    claim.textContent = "Claim this listing";
-    claim.addEventListener("click", () => {
-      window.ShroombergCommunity?.openProviderApplication(provider);
-      dismissProfile();
-    });
-    actions.append(claim);
-    card.append(actions);
-
-    const flags = document.createElement("div");
-    flags.className = "detail-flags";
-    flags.append(tag(clean(provider.addressStatus) || "Location context available", clean(provider.streetAddress) ? "" : "warning"));
-    flags.append(tag(clean(provider.websiteStatus) || (safeHttpUrl(provider.website) ? "Website URL recorded" : "No verified website URL"), safeHttpUrl(provider.website) ? "" : "warning"));
-    if (provider.isOnlineOnly) flags.append(tag("Online only", "soft"));
-    if (provider.businessOperatingVerified) flags.append(tag("Operating status verified", "soft"));
-    if (provider.geoPrecision) flags.append(tag("Source precision: " + clean(provider.geoPrecision), "soft"));
-    card.append(flags);
-
-    appendDetailSection(card, "Location context", provider.locationContext);
-    appendDetailSection(card, "Research note", provider.researchNote);
-
-    const coreFields = new Set([
-      "name", "category", "countryCode", "region", "city", "streetAddress", "postalCode", "addressKind",
-      "website", "isOnlineOnly", "locationContext", "researchNote"
-    ]);
-    const extraFields = Object.entries(provider).filter(([key, value]) => {
-      if (coreFields.has(key) || /(?:url|uri)$/i.test(key)) return false;
-      return value !== null && value !== undefined && value !== "";
-    });
-    if (extraFields.length) {
-      const section = document.createElement("div");
-      section.className = "detail-section";
-      const heading = document.createElement("h3");
-      heading.textContent = "Record details";
-      section.append(heading);
-      for (const [key, value] of extraFields) {
-        const row = document.createElement("p");
-        const label = document.createElement("strong");
-        label.textContent = `${key === "id" ? "Record ID" : humanize(key)}: `;
-        row.append(label, document.createTextNode(typeof value === "boolean" ? (value ? "Yes" : "No") : flattenValue(value).join(", ")));
-        section.append(row);
-      }
-      card.append(section);
-    }
-
-    const sourceSection = document.createElement("div");
-    sourceSection.className = "detail-section";
-    const sourceHeading = document.createElement("h3");
-    sourceHeading.textContent = "Sources";
-    const links = document.createElement("div");
-    links.className = "detail-links";
-    const seen = new Set();
-    for (const [key, value] of Object.entries(provider)) {
-      if (!/(?:url|uri)$/i.test(key)) continue;
-      const normalized = safeHttpUrl(value);
-      if (!normalized || seen.has(normalized)) continue;
-      seen.add(normalized);
-      links.append(makeLink(normalized, humanize(key)));
-    }
-    if (links.childElementCount) sourceSection.append(sourceHeading, links);
-    else {
-      const empty = document.createElement("p");
-      empty.textContent = "No source links are attached to this record.";
-      sourceSection.append(sourceHeading, empty);
-    }
-    card.append(sourceSection);
-
-    const reviewSection = document.createElement("section");
-    reviewSection.className = "detail-section";
-    reviewSection.id = "community-reviews";
-    const reviewHeading = document.createElement("h3");
-    reviewHeading.textContent = "Community reviews";
-    const reviewMessage = document.createElement("p");
-    reviewMessage.id = "review-message";
-    reviewMessage.className = "map-message";
-    reviewMessage.textContent = "Loading reviews…";
-    const reviewList = document.createElement("div");
-    reviewList.id = "review-list";
-    const loginPrompt = document.createElement("p");
-    loginPrompt.id = "review-login-required";
-    loginPrompt.className = "map-policy";
-    loginPrompt.hidden = true;
-    loginPrompt.append(document.createTextNode("Sign in to write a review. "));
-    const loginLink = document.createElement("a");
-    loginLink.href = "#account-panel";
-    loginLink.dataset.openPanel = "account-panel";
-    loginLink.textContent = "Open account";
-    loginPrompt.append(loginLink);
-    const reviewForm = document.createElement("form");
-    reviewForm.id = "review-form";
-    reviewForm.hidden = true;
-    const fields = document.createElement("div");
-    fields.className = "filter-row";
-    const ratingLabel = document.createElement("label");
-    ratingLabel.className = "filter-control";
-    const ratingCaption = document.createElement("span");
-    ratingCaption.textContent = "Rating";
-    const rating = document.createElement("select");
-    rating.id = "review-rating";
-    rating.name = "rating";
-    rating.required = true;
-    for (let score = 5; score >= 1; score -= 1) {
-      const option = new Option(`${score} ${score === 1 ? "star" : "stars"}`, String(score));
-      rating.add(option);
-    }
-    ratingLabel.append(ratingCaption, rating);
-    const titleLabel = document.createElement("label");
-    titleLabel.className = "filter-control";
-    const titleCaption = document.createElement("span");
-    titleCaption.textContent = "Title (optional)";
-    const reviewTitle = document.createElement("input");
-    reviewTitle.className = "search-box";
-    reviewTitle.id = "review-title";
-    reviewTitle.name = "title";
-    reviewTitle.maxLength = 100;
-    titleLabel.append(titleCaption, reviewTitle);
-    fields.append(ratingLabel, titleLabel);
-    const bodyLabel = document.createElement("label");
-    bodyLabel.className = "filter-control";
-    const bodyCaption = document.createElement("span");
-    bodyCaption.textContent = "Your experience";
-    const reviewBody = document.createElement("textarea");
-    reviewBody.id = "review-body";
-    reviewBody.name = "body";
-    reviewBody.rows = 4;
-    reviewBody.minLength = 20;
-    reviewBody.maxLength = 3000;
-    reviewBody.required = true;
-    bodyLabel.append(bodyCaption, reviewBody);
-    const reviewActions = document.createElement("div");
-    reviewActions.className = "map-actions";
-    const reviewSubmit = document.createElement("button");
-    reviewSubmit.type = "submit";
-    reviewSubmit.className = "button button-primary";
-    reviewSubmit.textContent = "Submit review";
-    reviewActions.append(reviewSubmit);
-    const reviewStatus = document.createElement("p");
-    reviewStatus.id = "review-status";
-    reviewStatus.className = "map-message";
-    reviewStatus.setAttribute("role", "status");
-    reviewStatus.setAttribute("aria-live", "polite");
-    reviewForm.append(fields, bodyLabel, reviewActions, reviewStatus);
-    const reviewHelp = document.createElement("p");
-    reviewHelp.className = "map-policy";
-    reviewHelp.textContent = "Reviews are moderated. Describe your experience with the provider; avoid private information and medical advice.";
-    reviewSection.append(reviewHeading, reviewMessage, reviewList, loginPrompt, reviewForm, reviewHelp);
-    card.append(reviewSection);
-    els.detail.replaceChildren(card);
-  }
-
-  function providerFromHash() {
-    const match = window.location.hash.match(/^#provider\/(.+)$/);
-    if (!match) return null;
-    let id;
-    try { id = decodeURIComponent(match[1]); } catch { id = match[1]; }
-    return providers.find((provider) => provider.id === id) || null;
-  }
-
-  function handleProviderRoute() {
-    const provider = providerFromHash();
-    if (provider && provider.id !== selectedId) {
-      selectProvider(provider, { navigate: false });
-      return;
-    }
-    if (provider && !els.profileDialog.open) {
-      renderDetail(provider);
-      window.ShroombergCommunity?.loadReviews(provider);
-      els.profileDialog.showModal();
-      return;
-    }
-    if (!provider && selectedId) clearProfile();
-  }
-
-  function cacheKey(query, countryCode) { return `shroomberg-osm:${(countryCode || "").toLocaleLowerCase()}:${query.toLocaleLowerCase()}`; }
-  function readCache(query, countryCode) {
-    const key = cacheKey(query, countryCode);
-    const memoryRecord = geocodeMemory.get(key);
-    if (memoryRecord && Date.now() - memoryRecord.savedAt < CACHE_TTL_MS) return memoryRecord.results;
-    try {
-      const record = JSON.parse(localStorage.getItem(key) || "null");
-      if (record && Date.now() - record.savedAt < CACHE_TTL_MS && Array.isArray(record.results)) {
-        geocodeMemory.set(key, record);
-        return record.results;
-      }
-    } catch { /* Continue if browser storage is unavailable. */ }
+      const value = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+      if (value && typeof value.access_token === "string" && typeof value.refresh_token === "string") return value;
+    } catch { /* Ignore unavailable or malformed tab storage. */ }
     return null;
   }
-  function writeCache(query, countryCode, results) {
-    const key = cacheKey(query, countryCode);
-    const record = { savedAt: Date.now(), results };
-    geocodeMemory.set(key, record);
-    try { localStorage.setItem(key, JSON.stringify(record)); }
-    catch { /* The map still works when browser storage is full or disabled. */ }
-  }
 
-  function fetchGeocode(query, countryCode = "", isCurrent = () => true) {
-    const task = geocodeQueue.catch(() => undefined).then(async () => {
-      if (!isCurrent()) return { results: [], cached: false, skipped: true };
-      const normalizedQuery = clean(query).slice(0, 200);
-      if (!normalizedQuery) return { results: [], cached: false };
-      const cached = readCache(normalizedQuery, countryCode);
-      if (cached) return { results: cached, cached: true };
-      const wait = Math.max(0, REQUEST_INTERVAL_MS - (Date.now() - lastGeocodeAt));
-      if (wait) await new Promise((resolve) => window.setTimeout(resolve, wait));
-      if (!isCurrent()) return { results: [], cached: false, skipped: true };
-      const params = new URLSearchParams({ q: normalizedQuery, format: "jsonv2", limit: "5", addressdetails: "1", "accept-language": "en" });
-      if (/^[A-Za-z]{2}$/.test(countryCode || "")) params.set("countrycodes", countryCode.toLowerCase());
-      lastGeocodeAt = Date.now();
-      let response;
-      try {
-        response = await fetch(NOMINATIM_URL + "?" + params.toString(), {
-          headers: { Accept: "application/json" },
-          referrerPolicy: "origin",
-          cache: "no-store"
-        });
-      } catch {
-        const error = new Error("network");
-        error.code = "network";
-        throw error;
-      }
-      if (!response.ok) {
-        const error = new Error("service");
-        error.status = response.status;
-        throw error;
-      }
-      let results;
-      try { results = await response.json(); }
-      catch {
-        const error = new Error("response");
-        error.code = "response";
-        throw error;
-      }
-      if (!Array.isArray(results)) results = [];
-      writeCache(normalizedQuery, countryCode, results);
-      return { results, cached: false };
-    });
-    geocodeQueue = task;
-    return task;
-  }
-
-  function clearDirectoryMarkers() {
-    precisionGeneration += 1;
-    if (precisionRefreshTimer) window.clearTimeout(precisionRefreshTimer);
-    precisionRefreshTimer = 0;
-    precisionLayer?.clearLayers();
-    precisionPoints.clear();
-    if (searchMarkerLayer) {
-      searchMarkerLayer.eachLayer((layer) => fadeRemoveLayer(layer, () => searchMarkerLayer?.removeLayer(layer)));
-    }
-    searchPins.clear();
-  }
-
-  function scheduleMapPrecisionRefresh() {
-    if (!map || !precisionLayer) return;
-    if (precisionRefreshTimer) window.clearTimeout(precisionRefreshTimer);
-    precisionRefreshTimer = window.setTimeout(() => {
-      precisionRefreshTimer = 0;
-      refineMapLocations();
-    }, 320);
-  }
-
-  function fadeRemoveLayer(layer, removeLayer) {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      removeLayer?.();
+  function saveSession(session) {
+    if (!session?.access_token || !session?.refresh_token) {
+      authSession = null;
+      try { sessionStorage.removeItem(SESSION_KEY); } catch { /* Storage may be disabled. */ }
       return;
     }
-    if (typeof layer.setStyle === "function") layer.setStyle({ opacity: 0, fillOpacity: 0 });
-    if (typeof layer.setOpacity === "function") layer.setOpacity(0);
-    layer.getElement?.()?.classList.add("shroomberg-node-leaving");
-    window.setTimeout(() => removeLayer?.(), 240);
-  }
-
-  function makeSearchLocationGroups(records) {
-    const groups = new Map();
-    for (const provider of records) {
-      const hasStreet = Boolean(clean(provider.streetAddress));
-      const query = hasStreet ? mapQuery(provider) : locationText(provider);
-      if (!query) continue;
-      const countryCode = clean(provider.countryCode);
-      const key = `${countryCode.toLocaleLowerCase()}|${query.toLocaleLowerCase()}`;
-      if (!groups.has(key)) groups.set(key, { query, countryCode, coarse: !hasStreet, providers: [] });
-      groups.get(key).providers.push(provider);
-    }
-    return [...groups.values()];
-  }
-
-  function isGeocodableAddress(provider) {
-    const address = clean(provider.streetAddress);
-    return Boolean(address) && !provider.isOnlineOnly &&
-      !/\b(?:p\.?\s*o\.?\s*box|post office box|rpo\s|postal box)\b/i.test(address);
-  }
-
-  function makePrecisionGroups(records, level) {
-    const groups = new Map();
-    for (const provider of records) {
-      if (level === "address" && !isGeocodableAddress(provider)) continue;
-      const query = level === "address"
-        ? mapQuery(provider)
-        : locationText(provider) || [clean(provider.region), clean(provider.mapZone), countryLabel(clean(provider.countryCode))].filter(Boolean).join(", ");
-      if (!query) continue;
-      const countryCode = clean(provider.countryCode);
-      const key = `${countryCode.toLocaleLowerCase()}|${query.toLocaleLowerCase()}`;
-      if (!groups.has(key)) groups.set(key, { key, query, countryCode, level, providers: [] });
-      groups.get(key).providers.push(provider);
-    }
-    return [...groups.values()];
-  }
-
-  function validMapPoint(result) {
-    const lat = Number(result?.lat);
-    const lon = Number(result?.lon);
-    return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
-  }
-
-  function cachedPrecisionResult(group) {
-    const cached = readCache(group.query, group.countryCode);
-    if (!cached) return { cached: false, result: null };
-    return { cached: true, result: cached.find(validMapPoint) || null };
-  }
-
-  function refinementPopup(point) {
-    const popup = document.createElement("div");
-    const heading = document.createElement("strong");
-    heading.textContent = `${point.providers.length} ${point.providers.length === 1 ? "provider record" : "provider records"}`;
-    const description = document.createElement("p");
-    description.textContent = point.level === "address"
-      ? "OpenStreetMap address match. This does not verify that the provider operates here or welcomes visitors."
-      : "Approximate city or region point. Zoom in further for recorded street-address matches.";
-    popup.append(heading, description);
-    for (const provider of point.providers.slice(0, 12)) {
-      const link = document.createElement("a");
-      link.href = `#provider/${encodeURIComponent(provider.id)}`;
-      link.textContent = clean(provider.name) || "Unnamed provider";
-      popup.append(link, document.createElement("br"));
-    }
-    if (point.providers.length > 12) {
-      const more = document.createElement("p");
-      more.textContent = `${point.providers.length - 12} more records at this point.`;
-      popup.append(more);
-    }
-    const location = document.createElement("p");
-    location.textContent = point.displayName;
-    popup.append(location);
-    return popup;
-  }
-
-  function addPrecisionMarker(group, result, zoom, bounds) {
-    if (!validMapPoint(result) || !precisionLayer || !window.L) return false;
-    const lat = Number(result.lat);
-    const lon = Number(result.lon);
-    const coordinates = window.L.latLng(lat, lon);
-    if (bounds && !bounds.contains(coordinates)) return false;
-    const key = `${group.level}:${lat.toFixed(5)},${lon.toFixed(5)}`;
-    let point = precisionPoints.get(key);
-    if (!point) {
-      point = {
-        level: group.level,
-        marker: window.L.circleMarker(coordinates, {
-          radius: group.level === "address" ? 8 : 9,
-          color: "#073b20",
-          weight: group.level === "address" ? 2.5 : 2,
-          opacity: group.level === "address" ? 1 : zoom >= ADDRESS_PRECISION_ZOOM ? 0.45 : 0.95,
-          fillColor: group.level === "address" ? "#8cab45" : "#7baa61",
-          fillOpacity: group.level === "address" ? 0.95 : zoom >= ADDRESS_PRECISION_ZOOM ? 0.25 : 0.8,
-          className: group.level === "address" ? "shroomberg-node shroomberg-node-address" : "shroomberg-node"
-        }).addTo(precisionLayer),
-        providers: [],
-        providerIds: new Set(),
-        displayName: clean(result.display_name) || group.query
-      };
-      point.marker.bindPopup(refinementPopup(point));
-      point.marker.bindTooltip("", { permanent: true, direction: "center", className: "shroomberg-node-count" });
-      precisionPoints.set(key, point);
-    }
-    for (const provider of group.providers) {
-      if (point.providerIds.has(provider.id)) continue;
-      point.providerIds.add(provider.id);
-      point.providers.push(provider);
-    }
-    point.marker.setTooltipContent(String(point.providers.length));
-    point.marker.setPopupContent(refinementPopup(point));
-    return true;
-  }
-
-  async function refineMapLocations() {
-    if (!map || !precisionLayer) return;
-    const generation = ++precisionGeneration;
-    const isCurrent = () => generation === precisionGeneration;
-    const zoom = map.getZoom();
-    const bounds = map.getBounds();
-    precisionLayer.clearLayers();
-    precisionPoints.clear();
-
-    for (const point of searchPins.values()) {
-      if (!point.zoneCenter || typeof point.marker.setStyle !== "function") continue;
-      point.marker.setStyle({
-        opacity: zoom >= CITY_PRECISION_ZOOM ? 0.18 : 0.95,
-        fillOpacity: zoom >= CITY_PRECISION_ZOOM ? 0.12 : 0.85
-      });
-    }
-
-    if (zoom < CITY_PRECISION_ZOOM || !activeMapRecords.length) return;
-
-    const localityGroups = makePrecisionGroups(activeMapRecords, "locality");
-    const localityResults = new Map();
-    for (const group of localityGroups) {
-      const cached = cachedPrecisionResult(group);
-      if (!cached.cached) continue;
-      if (cached.result) localityResults.set(group.key, cached.result);
-      if (cached.result) addPrecisionMarker(group, cached.result, zoom, bounds);
-    }
-
-    const visibleZoneProviderIds = new Set();
-    for (const point of searchPins.values()) {
-      if (!point.zoneCenter || !bounds.contains(point.marker.getLatLng())) continue;
-      for (const provider of point.providers) visibleZoneProviderIds.add(provider.id);
-    }
-    const visibleZoneGroups = localityGroups
-      .filter((group) => group.providers.some((provider) => visibleZoneProviderIds.has(provider.id)))
-      .filter((group) => !cachedPrecisionResult(group).cached)
-      .sort((a, b) => b.providers.length - a.providers.length || a.query.localeCompare(b.query));
-    const cityBatchSize = zoom >= 8 ? CITY_LOOKUP_BATCH + 2 : CITY_LOOKUP_BATCH;
-    const cityBatch = visibleZoneGroups.slice(0, cityBatchSize);
-    const remainingCityGroups = Math.max(0, visibleZoneGroups.length - cityBatch.length);
-    let completedCityLookups = 0;
-
-    if (cityBatch.length) {
-      setMapMessage(`Resolving up to ${cityBatch.length} city or region points for this view…`);
-      const cityJobs = cityBatch.map(async (group) => {
-        if (!isCurrent()) return;
-        try {
-          const { results } = await fetchGeocode(group.query, group.countryCode, isCurrent);
-          const result = results.find(validMapPoint) || null;
-          if (result) localityResults.set(group.key, result);
-          if (isCurrent() && result) addPrecisionMarker(group, result, zoom, bounds);
-          completedCityLookups += 1;
-          if (isCurrent() && (completedCityLookups === cityBatch.length || completedCityLookups % 3 === 0)) {
-            setMapMessage(`Zoomed map: ${precisionPoints.size.toLocaleString()} city or region points shown. Street-address points appear closer in.`);
-          }
-        } catch {
-          completedCityLookups += 1;
-        }
-      });
-      await Promise.allSettled(cityJobs);
-      if (!isCurrent()) return;
-      for (const group of cityBatch) {
-        const cached = cachedPrecisionResult(group);
-        if (cached.result) localityResults.set(group.key, cached.result);
-      }
-    }
-
-    if (zoom >= ADDRESS_PRECISION_ZOOM) {
-      const visibleLocalityProviders = localityGroups
-        .filter((group) => {
-          const result = localityResults.get(group.key) || cachedPrecisionResult(group).result;
-          return result && bounds.contains(window.L.latLng(Number(result.lat), Number(result.lon)));
-        })
-        .flatMap((group) => group.providers);
-      const addressGroups = makePrecisionGroups(visibleLocalityProviders, "address");
-      let cachedAddressCount = 0;
-      for (const group of addressGroups) {
-        const cached = cachedPrecisionResult(group);
-        if (cached.result && addPrecisionMarker(group, cached.result, zoom, bounds)) cachedAddressCount += 1;
-      }
-      const pendingAddressGroups = addressGroups
-        .filter((group) => !cachedPrecisionResult(group).cached)
-        .sort((a, b) => b.providers.length - a.providers.length || a.query.localeCompare(b.query));
-      const addressBatch = pendingAddressGroups.slice(0, ADDRESS_LOOKUP_BATCH);
-      if (addressBatch.length) setMapMessage(`Resolving up to ${addressBatch.length} visible street-address matches…`);
-      for (const group of addressBatch) {
-        if (!isCurrent()) return;
-        try {
-          const { results } = await fetchGeocode(group.query, group.countryCode, isCurrent);
-          if (!isCurrent()) return;
-          const result = results.find((candidate) => validMapPoint(candidate) &&
-            !coarseResultTypes.has(clean(candidate.addresstype).toLocaleLowerCase())) || null;
-          if (result) addPrecisionMarker(group, result, zoom, bounds);
-        } catch { /* Keep the city/region point when an address match fails. */ }
-      }
-      if (!isCurrent()) return;
-      const remainingAddressGroups = Math.max(0, pendingAddressGroups.length - addressBatch.length);
-      const mappedAddresses = [...precisionPoints.values()].filter((point) => point.level === "address").length;
-      setMapMessage(mappedAddresses
-        ? `Zoomed map: ${mappedAddresses.toLocaleString()} street-address match${mappedAddresses === 1 ? "" : "es"} shown. These points do not verify provider access or operating status.`
-        : "Zoomed map: city and region points are shown. No street-address matches were found in this view.");
-      if (remainingAddressGroups) {
-        setMapMessage(`Showing ${mappedAddresses.toLocaleString()} street-address matches. Zoom or pan to refine more locations.`);
-      }
-      if (!mappedAddresses && cachedAddressCount) {
-        setMapMessage("City and region points are shown here; address matches are approximate or unavailable.");
-      }
-      return;
-    }
-
-    if (!isCurrent()) return;
-    const mappedCities = [...precisionPoints.values()].filter((point) => point.level === "locality").length;
-    const message = mappedCities
-      ? `Zoomed map: ${mappedCities.toLocaleString()} city or region points shown. Zoom in closer for street-address matches.`
-      : "Zoom in on a service-zone marker to reveal city and region points.";
-    setMapMessage(remainingCityGroups
-      ? `${message} Zoom or pan again to refine additional locations.`
-      : message);
-  }
-
-  function searchMarkerPopup(point) {
-    const popup = document.createElement("div");
-    const heading = document.createElement("strong");
-    heading.textContent = `${point.providers.length} matching ${point.providers.length === 1 ? "provider" : "providers"}`;
-    const precision = document.createElement("p");
-    precision.textContent = point.zoneCenter
-      ? "Approximate service-zone center; this is not a verified provider venue."
-      : point.coarse
-        ? "Approximate city or region point from OpenStreetMap; not a verified provider venue."
-        : "Address match from OpenStreetMap; confirm details before visiting.";
-    popup.append(heading, precision);
-    for (const provider of point.providers.slice(0, 12)) {
-      const link = document.createElement("a");
-      link.href = `#provider/${encodeURIComponent(provider.id)}`;
-      link.textContent = clean(provider.name) || "Unnamed provider";
-      popup.append(link, document.createElement("br"));
-    }
-    if (point.providers.length > 12) {
-      const more = document.createElement("p");
-      more.textContent = `${point.providers.length - 12} more matches; narrow the search to see fewer listings at this point.`;
-      popup.append(more);
-    }
-    const place = document.createElement("p");
-    place.textContent = point.displayName;
-    popup.append(place);
-    return popup;
-  }
-
-  function addSearchMarker(providerGroup, result, coarse) {
-    const lat = Number(result.lat);
-    const lon = Number(result.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !searchMarkerLayer || !window.L) return false;
-    const key = `${lat.toFixed(5)},${lon.toFixed(5)}`;
-    let point = searchPins.get(key);
-    if (!point) {
-      point = {
-        marker: window.L.marker([lat, lon], { title: "Shroomberg search result", opacity: 0 }).addTo(searchMarkerLayer),
-        providers: [],
-        providerIds: new Set(),
-        coarse: Boolean(coarse),
-        displayName: clean(result.display_name) || "OpenStreetMap result"
-      };
-      searchPins.set(key, point);
-      window.requestAnimationFrame(() => {
-        point.marker.setOpacity(1);
-        point.marker.getElement()?.classList.add("shroomberg-marker-enter");
-      });
-    }
-    point.coarse = point.coarse || Boolean(coarse);
-    for (const provider of providerGroup.providers) {
-      if (point.providerIds.has(provider.id)) continue;
-      point.providerIds.add(provider.id);
-      point.providers.push(provider);
-    }
-    point.marker.bindPopup(searchMarkerPopup(point));
-    return true;
-  }
-
-  function fitDirectorySearchMarkers() {
-    if (!map || !searchMarkerLayer || searchPins.size === 0) return;
-    const points = [...searchPins.values()];
-    if (points.length === 1) {
-      map.setView(points[0].marker.getLatLng(), points[0].coarse ? 8 : 15);
-      return;
-    }
-    const bounds = window.L.featureGroup(points.map((point) => point.marker)).getBounds();
-    if (bounds.isValid()) map.fitBounds(bounds, { padding: [24, 24], maxZoom: 14 });
-  }
-
-  async function populateDirectorySearchMap(records, totalMatches, generation) {
-    const groups = makeSearchLocationGroups(records);
-    if (generation !== searchMapGeneration) return;
-    if (!groups.length) {
-      setMapMessage("These results have no address, city, or region to map.");
-      return;
-    }
-
-    let completed = 0;
-    let mappedProviderCount = 0;
-    let failed = 0;
-    let lastError = null;
-    const isCurrent = () => generation === searchMapGeneration;
-    const updateProgress = () => {
-      if (!isCurrent()) return;
-      const displayed = records.length;
-      const paging = totalMatches > displayed ? ` Showing ${displayed} of ${totalMatches} matches; use Show more or filters to map additional results.` : "";
-      setMapMessage(`OpenStreetMap mapped ${mappedProviderCount} of ${displayed} displayed search results across ${searchPins.size} map point${searchPins.size === 1 ? "" : "s"}.${paging}`);
+    authSession = {
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+      expires_at: Number(session.expires_at) || Math.floor(Date.now() / 1000) + (Number(session.expires_in) || 3600)
     };
+    try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(authSession)); } catch { /* Keep the session in memory for this page. */ }
+  }
 
-    setMapMessage(`Searching OpenStreetMap for ${groups.length} unique result location${groups.length === 1 ? "" : "s"}… Results will appear as locations resolve.`);
-    await Promise.all(groups.map(async (group) => {
-      if (!isCurrent()) return;
+  function apiError(status, code) {
+    const error = new Error(code || "request_failed");
+    error.status = status;
+    error.code = code || "request_failed";
+    return error;
+  }
+
+  async function refreshAuthSession() {
+    if (!authSession?.refresh_token) throw apiError(401, "authentication_required");
+    if (refreshInFlight) return refreshInFlight;
+    refreshInFlight = (async () => {
       try {
-        let result = (await fetchGeocode(group.query, group.countryCode, isCurrent)).results[0];
-        let coarse = group.coarse;
-        const fallbackQuery = [clean(group.providers[0]?.city), clean(group.providers[0]?.region), countryLabel(clean(group.providers[0]?.countryCode))].filter(Boolean).join(", ");
-        if (!result && !group.coarse && fallbackQuery && fallbackQuery.toLocaleLowerCase() !== group.query.toLocaleLowerCase()) {
-          result = (await fetchGeocode(fallbackQuery, group.countryCode, isCurrent)).results[0];
-          coarse = true;
-        }
-        if (!isCurrent()) return;
-        const approximate = coarse || coarseResultTypes.has(clean(result?.addresstype).toLocaleLowerCase());
-        if (result && addSearchMarker(group, result, approximate)) {
-          mappedProviderCount += group.providers.length;
-          if (searchPins.size === 1) fitDirectorySearchMarkers();
-        }
+        const response = await fetch(`${workerOrigin}/api/auth/refresh`, {
+          method: "POST", mode: "cors", credentials: "omit", cache: "no-store", redirect: "error",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refreshToken: authSession.refresh_token })
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload.session?.access_token) throw apiError(response.status, payload.error);
+        saveSession(payload.session);
+        return authSession;
       } catch (error) {
-        failed += 1;
-        lastError = error;
+        saveSession(null);
+        currentUser = null;
+        updateAuthUI();
+        throw error;
       } finally {
-        if (isCurrent()) {
-          completed += 1;
-          updateProgress();
-        }
+        refreshInFlight = null;
       }
-    }));
-
-    if (!isCurrent()) return;
-    fitDirectorySearchMarkers();
-    updateProgress();
-    if (failed) {
-      setMapMessage(`${mappedProviderCount} displayed results mapped; ${failed} location lookup${failed === 1 ? "" : "s"} failed. ${friendlyMapError(lastError)}`, true);
-    } else if (!mappedProviderCount) {
-      setMapMessage("OpenStreetMap found no usable points for these results. Try a city or region search instead.", true);
-    }
+    })();
+    return refreshInFlight;
   }
 
-  function scheduleSearchMapUpdate(records, totalMatches, invalidQuery = false, clearMatches = true) {
-    activeMapRecords = Array.isArray(records) ? records.slice() : [];
-    searchMapGeneration += 1;
-    if (searchMapTimer) window.clearTimeout(searchMapTimer);
-    if (!map || !searchMarkerLayer) return;
-    clearDirectoryMarkers();
-    if (marker) {
-      const oldMarker = marker;
-      marker = null;
-      fadeRemoveLayer(oldMarker, () => map?.removeLayer(oldMarker));
+  async function apiRequest(path, { method = "GET", body, authenticated = true, retryAuth = true } = {}) {
+    if (!workerOrigin) throw apiError(503, "worker_not_configured");
+    if (authenticated && authSession && authSession.expires_at <= Math.floor(Date.now() / 1000) + 45 && path !== "/api/auth/refresh") {
+      await refreshAuthSession();
     }
-    if (clearMatches) {
-      els.mapMatches.replaceChildren();
-      els.mapMatches.hidden = true;
-    }
-    if (invalidQuery) {
-      setMapMessage("Fix the directory search query to show its results on the map.", true);
-      return;
-    }
-    if (!records.length) {
-      map.setView([22, 0], 2);
-      setMapMessage("No provider records match the current search or filters.");
-      return;
-    }
-
-    const zones = new Map();
-    let unmapped = 0;
-    for (const provider of records) {
-      const lat = Number(provider.mapLatitude);
-      const lon = Number(provider.mapLongitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-        unmapped += 1;
-        continue;
-      }
-      const zone = clean(provider.mapZone) || "Service area";
-      const key = `${zone.toLocaleLowerCase()}|${lat.toFixed(5)},${lon.toFixed(5)}`;
-      if (!zones.has(key)) zones.set(key, { zone, lat, lon, providers: [] });
-      zones.get(key).providers.push(provider);
-    }
-
-    for (const point of zones.values()) {
-      const count = point.providers.length;
-      const radius = Math.max(9, Math.min(23, 8 + Math.log2(count + 1) * 2.2));
-      const node = window.L.circleMarker([point.lat, point.lon], {
-        radius, color: "#0a4824", weight: 2, opacity: 0.95,
-        fillColor: "#7baa61", fillOpacity: 0.85, className: "shroomberg-node"
-      }).addTo(searchMarkerLayer);
-      const pin = {
-        marker: node,
-        providers: point.providers,
-        providerIds: new Set(point.providers.map((provider) => provider.id)),
-        coarse: true,
-        zoneCenter: true,
-        displayName: point.zone
-      };
-      node.bindPopup(searchMarkerPopup(pin));
-      node.bindTooltip(String(count), { permanent: true, direction: "center", className: "shroomberg-node-count" });
-      searchPins.set(`${point.lat.toFixed(5)},${point.lon.toFixed(5)}`, pin);
-    }
-
-    if (searchPins.size) fitDirectorySearchMarkers();
-    else map.setView([22, 0], 2);
-    const mapped = records.length - unmapped;
-    const prefix = totalMatches === providers.length && records.length === providers.length
-      ? `Showing all ${mapped.toLocaleString()} providers`
-      : `Showing ${mapped.toLocaleString()} matching provider${mapped === 1 ? "" : "s"}`;
-    let message = `${prefix} across ${zones.size.toLocaleString()} service zone${zones.size === 1 ? "" : "s"}. Markers are approximate zone centers.`;
-    if (unmapped) message += ` ${unmapped.toLocaleString()} matching record${unmapped === 1 ? " has" : "s have"} no saved zone coordinates.`;
-    setMapMessage(message, unmapped > 0);
-  }
-
-  function friendlyMapError(error) {
-    if (error?.status === 429) return "OpenStreetMap is limiting public searches right now. Wait a moment, then try again.";
-    if (error?.status >= 500) return "OpenStreetMap search is temporarily unavailable. Try again shortly.";
-    if (error?.code === "network") return "Could not reach OpenStreetMap. Check your connection and try again.";
-    return "The map search could not be completed. Try again or open the location directly in OpenStreetMap.";
-  }
-
-  function showMapResult(result, options = {}) {
-    const { provider = null, coarse = false } = options;
-    if (!map || !window.L) {
-      setMapMessage("The interactive map is unavailable. Open the location directly in OpenStreetMap instead.", true);
-      return;
-    }
-    const lat = Number(result.lat), lon = Number(result.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-      setMapMessage("OpenStreetMap returned a result without usable map coordinates. Choose another result.", true);
-      return;
-    }
-    if (marker) {
-      const oldMarker = marker;
-      marker = null;
-      fadeRemoveLayer(oldMarker, () => map?.removeLayer(oldMarker));
-    }
-    marker = window.L.marker([lat, lon], { opacity: 0 }).addTo(map);
-    const activeMarker = marker;
-    window.requestAnimationFrame(() => {
-      activeMarker.setOpacity(1);
-      activeMarker.getElement()?.classList.add("shroomberg-marker-enter");
-    });
-    const popup = document.createElement("div");
-    const title = document.createElement("strong");
-    title.textContent = clean(provider?.name) || "Map search result";
-    const description = document.createElement("span");
-    description.textContent = clean(result.display_name);
-    popup.append(title, document.createElement("br"), description);
-    marker.bindPopup(popup).openPopup();
-    const zoom = coarse ? 8 : Number(result.zoom) || 16;
-    map.setView([lat, lon], Math.min(zoom, 17));
-    const precision = coarse
-      ? "City/region-level point; not a verified provider venue."
-      : provider
-        ? "OSM match for the saved address; this does not verify or change the source record."
-        : "Place selected from OpenStreetMap search; provider records were not changed.";
-    setMapMessage(precision);
-  }
-
-  function renderGeocodeMatches(results, options = {}) {
-    const { provider = null, coarse = false, cached = false, query = "" } = options;
-    els.mapMatches.replaceChildren();
-    const intro = document.createElement("p");
-    intro.className = "map-message";
-    intro.textContent = `${results.length} possible map ${results.length === 1 ? "match" : "matches"}${cached ? " (cached)" : ""}. Choose the right result.`;
-    els.mapMatches.append(intro);
-    for (const result of results.slice(0, 5)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "map-match";
-      button.textContent = clean(result.display_name) || "Unnamed OpenStreetMap result";
-      const small = document.createElement("small");
-      small.textContent = [clean(result.type), clean(result.addresstype), coarse ? "city/region query" : provider ? "source address query" : "place query"].filter(Boolean).join(" · ");
-      button.append(small);
-      button.addEventListener("click", () => showMapResult(result, { provider, coarse }));
-      els.mapMatches.append(button);
-    }
-    if (query && !provider) {
-      const open = makeLink("https://www.openstreetmap.org/search?query=" + encodeURIComponent(query), "Open this search in OpenStreetMap ↗", "map-match");
-      if (open) {
-        open.target = "_blank";
-        open.rel = "noopener noreferrer";
-        els.mapMatches.append(open);
-      }
-    }
-    els.mapMatches.hidden = false;
-  }
-
-  async function locateProvider(provider) {
-    if (!map) {
-      setMapMessage("The interactive map is unavailable. Use the OpenStreetMap search link in this profile.", true);
-      return;
-    }
-    const query = mapQuery(provider);
-    if (!query) {
-      setMapMessage("This record has no saved address, city, or operating region to search on the map.", true);
-      return;
-    }
-    els.mapMatches.hidden = true;
-    els.mapMatches.replaceChildren();
-    setMapMessage("Searching OpenStreetMap for the saved address or region…");
+    const headers = new Headers({ Accept: "application/json" });
+    if (body !== undefined) headers.set("Content-Type", "application/json");
+    if (authenticated && authSession?.access_token) headers.set("Authorization", `Bearer ${authSession.access_token}`);
+    let response;
     try {
-      let { results, cached } = await fetchGeocode(query, provider.countryCode);
-      const fallbackQuery = [clean(provider.city), clean(provider.region), countryLabel(clean(provider.countryCode))].filter(Boolean).join(", ");
-      let coarse = !clean(provider.streetAddress);
-      if (!results.length && clean(provider.streetAddress) && fallbackQuery && fallbackQuery !== query) {
-        const fallback = await fetchGeocode(fallbackQuery, provider.countryCode);
-        results = fallback.results;
-        cached = cached && fallback.cached;
-        coarse = true;
-      }
-      if (!results.length) {
-        setMapMessage("No OpenStreetMap match was found for this record. Try a broader city or region search.", true);
-        return;
-      }
-      if (coarse) setMapMessage("The exact address did not match. Choose a city or region result; it will be marked approximate.");
-      else setMapMessage("Choose the OpenStreetMap result that best matches the saved address.");
-      renderGeocodeMatches(results, { provider, coarse, cached });
-    } catch (error) {
-      setMapMessage(friendlyMapError(error), true);
-    }
-  }
-
-  function renderProviderMapMatches(matches, query) {
-    els.mapMatches.replaceChildren();
-    const intro = document.createElement("p");
-    intro.className = "map-message";
-    intro.textContent = matches.length
-      ? `${matches.length.toLocaleString()} provider ${matches.length === 1 ? "record matches" : "records match"}. Select a profile.`
-      : "No provider profiles match. Try a broader search or search this term as a place.";
-    els.mapMatches.append(intro);
-    for (const provider of matches.slice(0, MAP_RESULT_LIMIT)) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "map-match";
-      button.textContent = clean(provider.name) || "Unnamed provider";
-      const small = document.createElement("small");
-      small.textContent = [categoryLabel(provider.category), locationText(provider) || "Location not recorded"].filter(Boolean).join(" · ");
-      button.append(small);
-      button.addEventListener("click", () => {
-        selectProvider(provider, { navigate: true });
-        locateProvider(provider);
+      response = await fetch(`${workerOrigin}${path}`, {
+        method, mode: "cors", credentials: "omit", cache: "no-store", redirect: "error", headers,
+        body: body === undefined ? undefined : JSON.stringify(body)
       });
-      els.mapMatches.append(button);
-    }
-    const parsed = parseQuery(query);
-    const isStructured = parsed.tokens.some((token) => token.kind !== "text");
-    if (query && !isStructured) {
-      const place = document.createElement("button");
-      place.type = "button";
-      place.className = "map-match";
-      place.textContent = `Search “${query}” as a place in OpenStreetMap`;
-      const small = document.createElement("small");
-      small.textContent = "One lookup; results are not added to the provider data.";
-      place.append(small);
-      place.addEventListener("click", () => searchPlaceOnMap(query));
-      els.mapMatches.append(place);
-    }
-    if (matches.length > MAP_RESULT_LIMIT) {
-      const more = document.createElement("p");
-      more.className = "map-message";
-      more.textContent = `Showing the first ${MAP_RESULT_LIMIT} matches. Add search terms to narrow the results.`;
-      els.mapMatches.append(more);
-    }
-    els.mapMatches.hidden = false;
-  }
-
-  async function searchPlaceOnMap(query) {
-    if (!map) {
-      setMapMessage("The interactive map is unavailable. Try the OpenStreetMap search link in a provider profile.", true);
-      return;
-    }
-    els.mapMatches.hidden = true;
-    els.mapMatches.replaceChildren();
-    setMapMessage("Searching OpenStreetMap for that place…");
-    try {
-      const { results, cached } = await fetchGeocode(query);
-      if (!results.length) {
-        setMapMessage("No place was found. Try a city with its region or country, or search provider records.", true);
-        return;
-      }
-      renderGeocodeMatches(results, { cached, query });
-      setMapMessage("Choose the matching place to show it on the map.");
-    } catch (error) {
-      setMapMessage(friendlyMapError(error), true);
-    }
-  }
-
-  async function searchMap(query) {
-    const value = clean(query);
-    if (!value) {
-      setMapMessage("Enter a provider, address, city, or region to search the map.", true);
-      els.mapSearch.focus();
-      return;
-    }
-    const parsed = parseQuery(value);
-    if (parsed.error) {
-      setMapMessage(`Search format needs a tweak: ${parsed.error}`, true);
-      return;
-    }
-    if (providers.length) {
-      const matches = filtered.filter((provider) => matchesQuery(provider, parsed.tokens));
-      if (matches.length) {
-        renderProviderMapMatches(matches, value);
-        scheduleSearchMapUpdate(matches, matches.length, false, false);
-        return;
-      }
-      if (parsed.tokens.some((token) => token.kind !== "text")) {
-        els.mapMatches.hidden = true;
-        els.mapMatches.replaceChildren();
-        setMapMessage("No provider records match those map filters. Try a broader query or clear a filter.", true);
-        return;
-      }
-    }
-    await searchPlaceOnMap(value);
-  }
-
-  function clearFilters() {
-    resetProviderTypeFilters();
-    els.search.value = "";
-    els.category.value = "";
-    els.country.value = "";
-    updateRegionOptions();
-    els.region.value = "";
-    els.status.value = "";
-    renderList();
-  }
-
-  function resetMap() {
-    els.mapSearch.value = "";
-    if (marker && map) {
-      const oldMarker = marker;
-      fadeRemoveLayer(oldMarker, () => map?.removeLayer(oldMarker));
-    }
-    marker = null;
-    renderList();
-  }
-
-  function showDataError() {
-    filtered = [];
-    els.mapMatches.replaceChildren();
-    const message = document.createElement("p");
-    message.className = "map-message error";
-    message.textContent = "Provider records could not be loaded. Check your connection, then retry.";
-    const retry = document.createElement("button");
-    retry.type = "button";
-    retry.className = "button button-outline";
-    retry.textContent = "Retry loading data";
-    retry.addEventListener("click", loadDirectory);
-    els.mapMatches.append(message, retry);
-    els.mapMatches.hidden = false;
-    setMapMessage("Provider data is unavailable, so the provider nodes cannot be displayed. Try again to reload the directory.", true);
-  }
-
-  async function loadDirectory() {
-    setSearchFeedback("");
-    try {
-      const response = await fetch(DATA_URL, { cache: "no-cache" });
-      if (!response.ok) throw new Error("data");
-      const payload = await response.json();
-      if (!Array.isArray(payload.records) || payload.records.length === 0) throw new Error("data");
-      providers = payload.records;
-      setStats(providers);
-      $("#data-as-of").textContent = formatSnapshotDate(payload.asOf);
-      populateFilters();
-      updateProviderTypeCounts();
-      renderList();
-      handleProviderRoute();
-      if (els.mapSearch.value) await searchMap(els.mapSearch.value);
     } catch {
-      showDataError();
+      throw apiError(0, "network_error");
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && authenticated && retryAuth && authSession?.refresh_token && path !== "/api/auth/refresh") {
+      await refreshAuthSession();
+      return apiRequest(path, { method, body, authenticated, retryAuth: false });
+    }
+    if (!response.ok) throw apiError(response.status, payload.error);
+    return payload;
+  }
+
+  let currentUser = null;
+  let currentDisclaimer = null;
+  let selectedProvider = null;
+  let reviewProviderId = null;
+  let currentOwnReview = null;
+  let reviewLoadNumber = 0;
+  let authMode = "signin";
+  let authBusy = false;
+  let providerBusy = false;
+  let supportBusy = false;
+  let reviewBusy = false;
+  let activePage = pages.find((page) => !page.hidden) || mapPage;
+  let panelSwipeIndex = 0;
+  let panelTransitionId = 0;
+
+  function setStatus(element, message, isError = false) {
+    if (!element) return;
+    element.textContent = message;
+    element.classList.toggle("error", Boolean(isError));
+  }
+
+  function setVisible(element, visible) {
+    if (!element) return;
+    element.getAnimations().forEach((animation) => animation.cancel());
+    if (visible) {
+      const wasHidden = element.hidden;
+      element.hidden = false;
+      if (wasHidden && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        element.animate(
+          [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "translateY(0)" }],
+          { duration: 220, easing: "cubic-bezier(.2,.7,.2,1)" }
+        );
+      }
+      return;
+    }
+    if (element.hidden) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      element.hidden = true;
+      return;
+    }
+    const animation = element.animate(
+      [{ opacity: 1, transform: "translateY(0)" }, { opacity: 0, transform: "translateY(6px)" }],
+      { duration: 170, easing: "ease-in" }
+    );
+    animation.onfinish = () => { element.hidden = true; };
+  }
+
+  function panelOffset(direction, panel) {
+    const distance = panel?.getBoundingClientRect().width || window.innerWidth;
+    return { x: direction === "left" ? -distance : distance, y: 0 };
+  }
+
+  function panelFrames(from, to) {
+    const transform = ({ x, y }) => `translate3d(${x}px, ${y}px, 0)`;
+    return [
+      { transform: transform(from) },
+      { transform: transform(to) }
+    ];
+  }
+
+  function stopPageAnimations() {
+    for (const page of pages) {
+      page.getAnimations().forEach((animation) => animation.cancel());
+      page.style.zIndex = "";
     }
   }
 
-  function bindControls() {
-    els.search.addEventListener("input", renderList);
-    for (const control of [els.category, els.country, els.region, els.status]) {
-      control.addEventListener("change", () => {
-        if (control === els.category) includeCategoryProviderType(els.category.value);
-        if (control === els.country) updateRegionOptions();
-        renderList();
+  function hidePage(page) {
+    page.hidden = true;
+    page.inert = true;
+  }
+
+  function updatePageNavigation(page) {
+    const activeRouteId = page?.id === "provider-panel" ? "account-panel" : page?.id;
+    for (const link of navLinks) {
+      const authModeMatches = !link.dataset.authMode ||
+        (activeRouteId === "account-panel" && link.dataset.authMode === authMode);
+      if (link.dataset.openPanel === activeRouteId && authModeMatches) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    }
+  }
+
+  function transitionPage(target) {
+    if (!target) return;
+    if (target === activePage && !target.hidden && !target.inert) {
+      updatePageNavigation(target);
+      return;
+    }
+    const previous = activePage;
+    const transitionId = ++panelTransitionId;
+    stopPageAnimations();
+    for (const page of pages) {
+      if (page !== previous && page !== target) hidePage(page);
+    }
+
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reducedMotion) {
+      if (previous && previous !== target) hidePage(previous);
+      target.hidden = false;
+      target.inert = false;
+      activePage = target;
+      updatePageNavigation(target);
+      return;
+    }
+
+    const direction = swipeDirections[panelSwipeIndex++ % swipeDirections.length];
+    const outgoingOffset = panelOffset(direction, previous || target);
+    const incomingOffset = { x: -outgoingOffset.x, y: -outgoingOffset.y };
+    target.hidden = false;
+    target.inert = false;
+    activePage = target;
+    updatePageNavigation(target);
+    target.style.zIndex = previous && previous !== target ? "1" : "2";
+
+    if (previous && previous !== target && !previous.hidden) {
+      previous.inert = true;
+      previous.style.zIndex = "2";
+      const exit = previous.animate(
+        panelFrames({ x: 0, y: 0 }, outgoingOffset),
+        { duration: 380, easing: "cubic-bezier(.22,.61,.36,1)" }
+      );
+      exit.onfinish = () => {
+        if (transitionId === panelTransitionId && activePage === target) {
+          hidePage(previous);
+          previous.style.zIndex = "";
+          target.style.zIndex = "";
+        }
+      };
+    }
+
+    const entrance = target.animate(
+      panelFrames(incomingOffset, { x: 0, y: 0 }),
+      { duration: 380, easing: "cubic-bezier(.22,.61,.36,1)" }
+    );
+    entrance.onfinish = () => {
+      if (transitionId === panelTransitionId && activePage === target) target.style.zIndex = "";
+    };
+  }
+
+  function closePanel() {
+    if (!mapPage) return;
+    transitionPage(mapPage);
+    mapPage.scrollIntoView({ behavior: "smooth", block: "start" });
+    mapPage.focus({ preventScroll: true });
+  }
+
+  function openPanel(id) {
+    const target = document.getElementById(id);
+    const page = target?.closest(".site-page");
+    if (!target || !page) return;
+    transitionPage(page);
+    page.scrollIntoView({ behavior: "smooth", block: "start" });
+    page.focus({ preventScroll: true });
+    if (id === "account-panel" && !currentUser) window.setTimeout(() => $("#account-email-input")?.focus(), 0);
+    if (id === "provider-panel" && currentUser) loadProviderApplications();
+    if (id === "support-panel" && currentUser) loadSupportHistory();
+  }
+
+  document.addEventListener("click", (event) => {
+    const faqQuestion = event.target.closest(".faq-question");
+    if (faqQuestion) {
+      event.preventDefault();
+      const answer = document.getElementById(faqQuestion.getAttribute("aria-controls"));
+      const item = faqQuestion.closest(".faq-item");
+      if (!answer || !item) return;
+      const priorTimer = faqCloseTimers.get(answer);
+      if (priorTimer) window.clearTimeout(priorTimer);
+      const open = faqQuestion.getAttribute("aria-expanded") !== "true";
+      faqQuestion.setAttribute("aria-expanded", String(open));
+      const sign = faqQuestion.querySelector("span");
+      if (sign) sign.textContent = "+";
+      if (open) {
+        item.classList.remove("is-closing");
+        answer.hidden = false;
+      } else {
+        item.classList.add("is-closing");
+        const timer = window.setTimeout(() => {
+          if (faqQuestion.getAttribute("aria-expanded") === "false") answer.hidden = true;
+          item.classList.remove("is-closing");
+          faqCloseTimers.delete(answer);
+        }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 180);
+        faqCloseTimers.set(answer, timer);
+      }
+      return;
+    }
+    const closeButton = event.target.closest("[data-close-panel]");
+    if (closeButton) {
+      const page = closeButton.closest(".site-page");
+      if (page && page !== mapPage) closePanel();
+      return;
+    }
+    const opener = event.target.closest("[data-open-panel]");
+    if (opener) {
+      event.preventDefault();
+      if (opener.dataset.authMode) setAccountMode(opener.dataset.authMode);
+      openPanel(opener.dataset.openPanel);
+    }
+  });
+
+  function setAccountMode(mode) {
+    authMode = mode === "signup" ? "signup" : "signin";
+    const heading = $("#account-heading");
+    const submit = $("#account-submit");
+    const toggle = $("#account-mode-toggle");
+    const password = $("#account-password-input");
+    if (heading) heading.textContent = authMode === "signup" ? "Join the community" : "Sign in to Shroomberg";
+    passwordRecovery = false;
+    setVisible($("#account-form"), true);
+    setVisible($("#password-update-form"), false);
+    if (submit) submit.textContent = authMode === "signup" ? "Create account" : "Sign in";
+    if (toggle) toggle.textContent = authMode === "signup" ? "I already have an account" : "Create an account";
+    if (password) password.autocomplete = authMode === "signup" ? "new-password" : "current-password";
+    setStatus($("#account-status"), "");
+  }
+
+  function updateAuthUI() {
+    const signedIn = Boolean(currentUser) && !passwordRecovery;
+    setVisible($("#account-signed-out"), !signedIn);
+    setVisible($("#account-signed-in"), signedIn);
+    $("#account-email").textContent = currentUser?.email || "your account";
+    setVisible($("#provider-login-required"), !signedIn);
+    setVisible($("#provider-form"), signedIn);
+    setVisible($("#support-login-required"), !signedIn);
+    setVisible($("#support-form"), signedIn);
+    $("#provider-submit").disabled = !signedIn || !currentDisclaimer;
+    $("#provider-application-history").textContent = signedIn ? "Loading your applications…" : "Sign in to view your submissions.";
+    $("#support-history").textContent = signedIn ? "Loading your requests…" : "Sign in to view your requests.";
+    if (signedIn) {
+      loadProviderApplications();
+      loadSupportHistory();
+    }
+    if (selectedProvider) loadReviews(selectedProvider);
+  }
+
+  function redirectUrl() {
+    return window.location.origin + window.location.pathname;
+  }
+
+  async function submitAccount(event) {
+    event.preventDefault();
+    if (!workerOrigin || !authReady || authBusy) return;
+    const form = event.currentTarget;
+    if (!form.reportValidity()) return;
+    authBusy = true;
+    $("#account-submit").disabled = true;
+    setStatus($("#account-status"), authMode === "signup" ? "Creating your account…" : "Signing in…");
+    const email = clean($("#account-email-input").value).toLowerCase();
+    const password = $("#account-password-input").value;
+    try {
+      if (authMode === "signup") {
+        const result = await apiRequest("/api/auth/signup", {
+          method: "POST", authenticated: false,
+          body: { email, password, redirectTo: redirectUrl() }
+        });
+        if (result.session) {
+          saveSession(result.session);
+          currentUser = result.user;
+          updateAuthUI();
+          setStatus($("#account-status"), "Account created. You are signed in.");
+        } else {
+          setAccountMode("signin");
+          setStatus($("#account-status"), "Account request received. Check your email to confirm it, then sign in here.");
+        }
+      } else {
+        const result = await apiRequest("/api/auth/login", {
+          method: "POST", authenticated: false, body: { email, password }
+        });
+        saveSession(result.session);
+        currentUser = result.user;
+        updateAuthUI();
+        setStatus($("#account-status"), "You are signed in.");
+      }
+    } catch (error) {
+      const tooMany = error?.status === 429 || error?.code === "rate_limited";
+      setStatus($("#account-status"), tooMany
+        ? "There have been too many attempts. Wait a little and try again."
+        : authMode === "signup"
+          ? "We couldn't create the account. Check the email and password, then try again."
+          : "We couldn't sign you in. Check your email and password, then try again.", true);
+    } finally {
+      authBusy = false;
+      $("#account-submit").disabled = false;
+    }
+  }
+
+  async function resetPassword() {
+    if (!workerOrigin || !authReady) return;
+    const email = clean($("#account-email-input").value).toLowerCase();
+    if (!email) {
+      $("#account-email-input").focus();
+      $("#account-email-input").reportValidity();
+      setStatus($("#account-status"), "Enter your account email first.", true);
+      return;
+    }
+    try {
+      await apiRequest("/api/auth/password-reset", {
+        method: "POST", authenticated: false, body: { email, redirectTo: redirectUrl() }
       });
+      setStatus($("#account-status"), "If an account uses that address, a password reset email is on its way.");
+    } catch {
+      setStatus($("#account-status"), "We couldn't send a reset email. Check your connection and try again.", true);
     }
-    els.searchToggle.addEventListener("click", () => setSearchPanelOpen(els.searchToggle.getAttribute("aria-expanded") !== "true"));
-    for (const input of document.querySelectorAll("[data-provider-type]")) {
-      input.addEventListener("change", renderList);
+  }
+
+  async function updatePassword(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!workerOrigin || !authReady || authBusy || !form.reportValidity()) return;
+    authBusy = true;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    setStatus($("#password-update-status"), "Updating your password…");
+    try {
+      await apiRequest("/api/auth/update-password", {
+        method: "POST", body: { password: $("#new-password-input").value }
+      });
+      passwordRecovery = false;
+      form.reset();
+      saveSession(null);
+      currentUser = null;
+      setVisible(form, false);
+      setVisible($("#account-form"), true);
+      setAccountMode("signin");
+      updateAuthUI();
+      setStatus($("#account-status"), "Password updated. Sign in with your new password.");
+    } catch {
+      setStatus($("#password-update-status"), "We couldn't update the password. Use a current reset link and try again.", true);
+    } finally {
+      authBusy = false;
+      button.disabled = false;
     }
-    els.clear.addEventListener("click", clearFilters);
-    els.mapSearchForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (mapSearchBusy) return;
-      mapSearchBusy = true;
-      els.mapSearchButton.disabled = true;
-      try { await searchMap(els.mapSearch.value); }
-      finally { mapSearchBusy = false; els.mapSearchButton.disabled = false; }
-    });
-    els.resetMap.addEventListener("click", resetMap);
-    els.closeProfile.addEventListener("click", dismissProfile);
-    els.profileDialog.addEventListener("cancel", (event) => {
-      event.preventDefault();
-      dismissProfile();
-    });
-    els.profileDialog.addEventListener("click", (event) => {
-      if (event.target === els.profileDialog) dismissProfile();
-    });
-    window.addEventListener("hashchange", handleProviderRoute);
-    window.addEventListener("popstate", handleProviderRoute);
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "/" && !["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) {
-        event.preventDefault();
-        els.search.focus();
+  }
+
+  async function signOut() {
+    if (!workerOrigin) return;
+    try {
+      if (authSession?.access_token) await apiRequest("/api/auth/logout", { method: "POST", body: {} });
+    } catch {
+      // Clear local credentials even when the remote session cannot be reached.
+    }
+    saveSession(null);
+    currentUser = null;
+    updateAuthUI();
+    openPanel("account-panel");
+    setStatus($("#account-status"), "You are signed out.");
+  }
+
+  async function loadDisclaimer() {
+    if (!workerOrigin) return;
+    try {
+      const result = await apiRequest("/api/disclaimer", { authenticated: false });
+      if (!result.disclaimer) throw new Error("unavailable");
+      currentDisclaimer = result.disclaimer;
+      $("#disclaimer-title").textContent = result.disclaimer.title;
+      $("#disclaimer-body").textContent = result.disclaimer.body;
+      $("#disclaimer-version").textContent = `Version ${result.disclaimer.version}. The signed application records this exact wording and a server timestamp.`;
+      $("#provider-submit").disabled = !currentUser;
+    } catch {
+      currentDisclaimer = null;
+      $("#disclaimer-title").textContent = "Disclaimer unavailable";
+      $("#disclaimer-body").textContent = "The current provider disclaimer could not be loaded. Applications are temporarily unavailable; try again later.";
+      $("#disclaimer-version").textContent = "";
+      $("#provider-submit").disabled = true;
+    }
+  }
+
+  function openProviderApplication(provider = null) {
+    const target = $("#provider-target-id");
+    const claimContext = $("#provider-claim-context");
+    if (provider) {
+      target.value = clean(provider.id);
+      $("#provider-name").value = clean(provider.name);
+      $("#provider-type").value = clean(provider.category);
+      $("#provider-country").value = clean(provider.countryCode).toUpperCase();
+      $("#provider-region").value = clean(provider.region);
+      $("#provider-city").value = clean(provider.city);
+      $("#provider-street").value = clean(provider.streetAddress);
+      $("#provider-postal").value = clean(provider.postalCode);
+      $("#provider-website").value = clean(provider.website);
+      claimContext.textContent = `You are applying to claim “${clean(provider.name)}.” The existing directory record will not change until the application is reviewed and the source workbook is updated.`;
+    } else {
+      target.value = "";
+      claimContext.textContent = "To claim an existing directory entry, open its profile and choose “Claim this listing.”";
+    }
+    if (currentUser && !clean($("#provider-contact-email").value)) {
+      $("#provider-contact-email").value = currentUser.email || "";
+    }
+    openPanel("account-panel");
+    if (currentUser) $("#account-signed-in [data-open-panel='provider-panel']")?.focus({ preventScroll: true });
+  }
+
+  function formatDate(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Date not available" : date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+
+  async function loadProviderApplications() {
+    const output = $("#provider-application-history");
+    if (!workerOrigin || !currentUser) return;
+    const userId = currentUser.id;
+    output.textContent = "Loading your applications…";
+    let data;
+    try {
+      ({ applications: data } = await apiRequest("/api/applications"));
+    } catch {
+      if (!currentUser || currentUser.id !== userId) return;
+      output.textContent = "Your application history is temporarily unavailable.";
+      return;
+    }
+    if (!currentUser || currentUser.id !== userId) return;
+    if (!data?.length) {
+      output.textContent = "No applications submitted yet.";
+      return;
+    }
+    const list = document.createElement("div");
+    for (const application of data) {
+      const row = document.createElement("p");
+      row.textContent = `${application.provider_name} · ${application.status.replaceAll("_", " ")} · ${formatDate(application.created_at)}`;
+      list.append(row);
+    }
+    output.replaceChildren(list);
+  }
+
+  async function submitProviderApplication(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!workerOrigin || !currentUser || providerBusy || !form.reportValidity()) return;
+    if (!currentDisclaimer) {
+      setStatus($("#provider-status"), "The current disclaimer is unavailable. Try again later.", true);
+      return;
+    }
+    providerBusy = true;
+    const button = $("#provider-submit");
+    button.disabled = true;
+    button.textContent = "Sending application…";
+    setStatus($("#provider-status"), "Submitting your signed application…");
+    const value = (id) => clean($(id).value) || null;
+    try {
+      const result = await apiRequest("/api/applications", {
+        method: "POST",
+        body: {
+          targetProviderId: value("#provider-target-id"),
+          providerName: value("#provider-name"),
+          providerType: value("#provider-type"),
+          website: value("#provider-website"),
+          contactEmail: value("#provider-contact-email"),
+          phone: value("#provider-phone"),
+          countryCode: value("#provider-country").toUpperCase(),
+          operatingRegion: value("#provider-region"),
+          city: value("#provider-city"),
+          streetAddress: value("#provider-street"),
+          postalCode: value("#provider-postal"),
+          serviceArea: value("#provider-service-area"),
+          servicesDescription: value("#provider-description"),
+          licenseInformation: value("#provider-license"),
+          authorizationConfirmed: $("#provider-authorized").checked,
+          signatureName: value("#provider-signature"),
+          signatureConsent: $("#provider-signature-consent").checked,
+          disclaimerVersion: currentDisclaimer.version
+        }
+      });
+      form.reset();
+      $("#provider-target-id").value = "";
+      $("#provider-claim-context").textContent = "To claim an existing directory entry, open its profile and choose “Claim this listing.”";
+      $("#provider-contact-email").value = currentUser.email || "";
+      setStatus($("#provider-status"), `Application received${result.id ? ` (reference ${String(result.id).slice(0, 8)})` : ""}. It is private and pending review.`);
+      await loadProviderApplications();
+    } catch (error) {
+      if (error?.code === "disclaimer_version_unavailable") {
+        currentDisclaimer = null;
+        await loadDisclaimer();
+        setStatus($("#provider-status"), "The disclaimer changed while you were completing the form. Review the updated text and submit again.", true);
+      } else if (error?.status === 429 || error?.code === "rate_limited") {
+        setStatus($("#provider-status"), "For security, only a few applications can be submitted per hour. Try again later.", true);
+      } else {
+        setStatus($("#provider-status"), "We couldn't send the application. Check the required fields and try again.", true);
       }
-      if (event.key === "Escape" && document.activeElement === els.search) {
-        els.search.value = "";
-        renderList();
+    } finally {
+      providerBusy = false;
+      button.disabled = !currentUser || !currentDisclaimer;
+      button.textContent = "Submit signed application";
+    }
+  }
+
+  async function loadSupportHistory() {
+    const output = $("#support-history");
+    if (!workerOrigin || !currentUser) return;
+    const userId = currentUser.id;
+    output.textContent = "Loading your requests…";
+    let data;
+    try {
+      ({ requests: data } = await apiRequest("/api/support"));
+    } catch {
+      if (!currentUser || currentUser.id !== userId) return;
+      output.textContent = "Your support history is temporarily unavailable.";
+      return;
+    }
+    if (!currentUser || currentUser.id !== userId) return;
+    if (!data?.length) {
+      output.textContent = "No support requests submitted yet.";
+      return;
+    }
+    const list = document.createElement("div");
+    for (const request of data) {
+      const row = document.createElement("p");
+      row.textContent = `${request.subject} · ${request.status.replaceAll("_", " ")} · ${formatDate(request.created_at)}`;
+      list.append(row);
+    }
+    output.replaceChildren(list);
+  }
+
+  async function submitSupportRequest(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!workerOrigin || !currentUser || supportBusy || !form.reportValidity()) return;
+    supportBusy = true;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    setStatus($("#support-status"), "Sending your request…");
+    try {
+      await apiRequest("/api/support", {
+        method: "POST",
+        body: {
+          requestType: $("#support-type").value,
+          subject: clean($("#support-subject").value),
+          message: clean($("#support-message").value)
+        }
+      });
+      form.reset();
+      setStatus($("#support-status"), "Your support request has been received. You can review its status here.");
+      await loadSupportHistory();
+    } catch (error) {
+      const rateLimited = error?.status === 429 || error?.code === "rate_limited";
+      setStatus($("#support-status"), rateLimited
+        ? "For security, only a few support requests can be sent per hour. Try again later."
+        : "We couldn't send the request. Check the required fields and try again.", true);
+    } finally {
+      supportBusy = false;
+      button.disabled = false;
+    }
+  }
+
+  function reviewCard(review, owned = false) {
+    const card = document.createElement("article");
+    card.className = "detail-location";
+    const title = document.createElement("strong");
+    title.textContent = clean(review.title) || (owned ? "Your review" : "Community review");
+    const meta = document.createElement("p");
+    const stars = "★".repeat(Number(review.rating)) + "☆".repeat(5 - Number(review.rating));
+    meta.textContent = `${stars} · ${review.rating}/5 · ${owned ? `Your review: ${review.status.replaceAll("_", " ")}` : formatDate(review.created_at)}`;
+    const body = document.createElement("p");
+    body.textContent = review.body;
+    card.append(title, meta, body);
+    return card;
+  }
+
+  async function loadReviews(provider) {
+    if (reviewProviderId !== provider.id) currentOwnReview = null;
+    reviewProviderId = provider.id;
+    selectedProvider = provider;
+    const sequence = ++reviewLoadNumber;
+    const section = $("#community-reviews");
+    if (!section) return;
+    const message = $("#review-message", section);
+    const list = $("#review-list", section);
+    const loginPrompt = $("#review-login-required", section);
+    const form = $("#review-form", section);
+    list.replaceChildren();
+    setStatus(message, workerOrigin ? "Loading reviews…" : "Review services are not connected yet.", !workerOrigin);
+    if (!workerOrigin) return;
+
+    let result;
+    try {
+      result = await apiRequest(`/api/reviews?providerId=${encodeURIComponent(provider.id)}`);
+    } catch {
+      if (sequence === reviewLoadNumber) setStatus(message, "Reviews are temporarily unavailable. Try again later.", true);
+      return;
+    }
+    if (sequence !== reviewLoadNumber || selectedProvider?.id !== provider.id) return;
+    const own = result.ownReview;
+    currentOwnReview = own;
+    const publicReviews = result.reviews || [];
+    const isOwnPublished = own?.status === "published";
+    const combined = [...publicReviews.filter((review) => review.id !== own?.id).map((review) => ({ review, owned: false }))];
+    if (own) combined.unshift({ review: own, owned: true });
+    for (const entry of combined) list.append(reviewCard(entry.review, entry.owned));
+    setStatus(message, publicReviews.length
+      ? `${publicReviews.length} public ${publicReviews.length === 1 ? "review" : "reviews"}. Reviews are moderated and shown only for approved provider records.`
+      : "No public reviews are approved for this provider yet. Submitted reviews are moderated before publication.");
+
+    setVisible(loginPrompt, !currentUser);
+    setVisible(form, Boolean(currentUser) && !isOwnPublished);
+    const titleInput = $("#review-title", form);
+    const bodyInput = $("#review-body", form);
+    const ratingInput = $("#review-rating", form);
+    const submit = form.querySelector("button[type='submit']");
+    if (own?.status === "rejected") {
+      titleInput.value = own.title || "";
+      bodyInput.value = own.body || "";
+      ratingInput.value = String(own.rating);
+      submit.textContent = "Update and resubmit review";
+    } else {
+      titleInput.value = "";
+      bodyInput.value = "";
+      ratingInput.value = "5";
+      submit.textContent = "Submit review";
+    }
+    setStatus($("#review-status", form), own?.status === "pending"
+      ? "Your review is pending moderation. You can submit one review per provider."
+      : own?.status === "rejected"
+        ? "Your review needs changes before it can be considered again."
+        : isOwnPublished
+          ? "Your review is published."
+          : "");
+  }
+
+  async function submitReview(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    if (!workerOrigin || !currentUser || !selectedProvider || reviewBusy || !form.reportValidity()) return;
+    const provider = selectedProvider;
+    const ownReview = currentOwnReview;
+    reviewBusy = true;
+    const button = form.querySelector("button[type='submit']");
+    button.disabled = true;
+    setStatus($("#review-status", form), "Submitting your review…");
+    const payload = {
+      rating: Number($("#review-rating", form).value),
+      title: clean($("#review-title", form).value),
+      body: clean($("#review-body", form).value)
+    };
+    try {
+      if (ownReview?.status === "rejected") {
+        await apiRequest(`/api/reviews/${encodeURIComponent(ownReview.id)}`, { method: "PATCH", body: payload });
+      } else {
+        await apiRequest("/api/reviews", {
+          method: "POST", body: { providerId: provider.id, ...payload }
+        });
       }
-      if (event.key === "Escape" && document.activeElement === els.mapSearch) {
-        els.mapSearch.value = "";
-        resetMap();
-      }
+      setStatus($("#review-status", form), "Review received. It will appear publicly after moderation and provider-record approval.");
+      if (selectedProvider?.id === provider.id) await loadReviews(provider);
+    } catch (error) {
+      setStatus($("#review-status", form), error?.status === 409
+        ? "You already have a review for this provider. Check its status above."
+        : error?.status === 429
+          ? "For security, only a few reviews can be submitted per hour. Try again later."
+          : "We couldn't send the review. Check the required fields and try again.", true);
+    } finally {
+      reviewBusy = false;
+      button.disabled = false;
+    }
+  }
+
+  function clearReviews() {
+    selectedProvider = null;
+    reviewProviderId = null;
+    currentOwnReview = null;
+    reviewLoadNumber += 1;
+  }
+
+  function bindForms() {
+    $("#account-form").addEventListener("submit", submitAccount);
+    $("#account-mode-toggle").addEventListener("click", () => setAccountMode(authMode === "signup" ? "signin" : "signup"));
+    $("#password-reset").addEventListener("click", resetPassword);
+    $("#password-update-form").addEventListener("submit", updatePassword);
+    $("#sign-out").addEventListener("click", signOut);
+    $("#provider-form").addEventListener("submit", submitProviderApplication);
+    $("#support-form").addEventListener("submit", submitSupportRequest);
+    document.addEventListener("submit", (event) => {
+      if (event.target?.id === "review-form") submitReview(event);
     });
   }
 
-  function start() {
-    const splash = $(".brand-splash");
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) splash?.remove();
-    else window.setTimeout(() => splash?.remove(), 1950);
-    initMap();
-    bindControls();
-    const params = new URLSearchParams(window.location.search);
-    if (params.has("q")) {
-      els.search.value = params.get("q") || "";
+  async function start() {
+    bindForms();
+    if (!workerOrigin) {
+      $("#auth-configuration-note").textContent = "Account, review, and submission services are not connected yet. Directory browsing remains available.";
+      $("#account-submit").disabled = true;
+      $("#account-mode-toggle").disabled = true;
+      $("#password-reset").disabled = true;
+      return;
     }
-    if (params.has("map")) {
-      els.mapSearch.value = params.get("map") || "";
-    }
-    loadDirectory();
+    $("#auth-configuration-note").textContent = "Connecting account and provider services…";
+    $("#account-submit").disabled = true;
+    authSession = storedSession();
+    await restoreAuthState();
+    await loadDisclaimer();
+    authReady = true;
+    $("#account-submit").disabled = false;
+    $("#auth-configuration-note").textContent = "Accounts use email and password. Provider forms, reviews, and support requests require sign-in.";
+    updateAuthUI();
   }
 
+  async function restoreAuthState() {
+    const callback = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    const accessToken = callback.get("access_token");
+    const refreshToken = callback.get("refresh_token");
+    const callbackType = callback.get("type");
+    const hasAuthCallback = callback.has("access_token") || callback.has("error") || callback.has("error_description");
+    const hasCallbackError = callback.has("error") || callback.has("error_description") ||
+      (callback.has("access_token") && !callback.has("refresh_token"));
+    authSession = storedSession();
+    if (accessToken && refreshToken) {
+      const expiresIn = Number(callback.get("expires_in")) || 3600;
+      saveSession({ access_token: accessToken, refresh_token: refreshToken, expires_in: expiresIn });
+      passwordRecovery = callbackType === "recovery";
+    }
+    if (hasAuthCallback) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+    if (authSession) {
+      try {
+        const result = await apiRequest("/api/auth/session");
+        currentUser = result.user || null;
+      } catch {
+        saveSession(null);
+        currentUser = null;
+      }
+    }
+    if (passwordRecovery) {
+      setVisible($("#account-form"), !currentUser);
+      setVisible($("#password-update-form"), Boolean(currentUser));
+      setStatus($("#password-update-status"), currentUser
+        ? "Choose a new password for your account."
+        : "This password reset link is invalid or has expired. Request a new one.", !currentUser);
+      if (currentUser) openPanel("account-panel");
+      else {
+        setStatus($("#account-status"), "This password reset link is invalid or has expired. Request a new one.", true);
+        openPanel("account-panel");
+      }
+    } else if (callbackType === "signup" && currentUser) {
+      setStatus($("#account-status"), "Email confirmed. You are signed in.");
+      openPanel("account-panel");
+    } else if (hasCallbackError) {
+      setStatus($("#account-status"), "That email link could not be verified. Request a new link and try again.", true);
+      openPanel("account-panel");
+    }
+  }
+
+  window.ShroombergCommunity = { loadReviews, clearReviews, openProviderApplication };
   start();
 })();
