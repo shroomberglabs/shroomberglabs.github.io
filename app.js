@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const DATA_URL = "./providers.json";
+  const DATA_URLS = ["./providers.json", "./data/providers.json"];
   const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -1515,10 +1515,21 @@
   async function loadDirectory() {
     setSearchFeedback("");
     try {
-      const response = await fetch(DATA_URL, { cache: "no-cache" });
-      if (!response.ok) throw new Error("data");
-      const payload = await response.json();
-      if (!Array.isArray(payload.records) || payload.records.length === 0) throw new Error("data");
+      let payload = null;
+      for (const dataUrl of DATA_URLS) {
+        try {
+          const response = await fetch(dataUrl, { cache: "no-cache" });
+          if (!response.ok) continue;
+          const candidate = await response.json();
+          if (Array.isArray(candidate.records) && candidate.records.length > 0) {
+            payload = candidate;
+            break;
+          }
+        } catch {
+          // Try the other supported flat-file location.
+        }
+      }
+      if (!payload) throw new Error("data");
       providers = payload.records;
       setStats(providers);
       $("#data-as-of").textContent = formatSnapshotDate(payload.asOf);
