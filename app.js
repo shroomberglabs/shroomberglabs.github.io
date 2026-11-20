@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const DATA_URLS = ["./providers.json", "./data/providers.json"];
+  const DATA_URLS = ["./providers.json"];
   const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
   const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
