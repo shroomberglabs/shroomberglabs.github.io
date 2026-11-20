@@ -7,6 +7,10 @@
   const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
   const REQUEST_INTERVAL_MS = 1100;
   const MAP_RESULT_LIMIT = 20;
+  const CITY_PRECISION_ZOOM = 5;
+  const ADDRESS_PRECISION_ZOOM = 11;
+  const CITY_LOOKUP_BATCH = 6;
+  const ADDRESS_LOOKUP_BATCH = 8;
   const coarseResultTypes = new Set(["country", "state", "province", "region", "county", "city", "town", "village", "municipality", "hamlet"]);
   const categoryNames = {
     access: "Access & advocacy",
@@ -130,14 +134,20 @@
   let map;
   let marker;
   let searchMarkerLayer;
+  let precisionLayer;
   let searchMapTimer = 0;
   let searchMapGeneration = 0;
+  let precisionRefreshTimer = 0;
+  let precisionGeneration = 0;
+  let precisionPoints = new Map();
+  let activeMapRecords = [];
   let searchPanelTimer = 0;
   let profileCloseTimer = 0;
   const searchPins = new Map();
   let lastGeocodeAt = 0;
   let geocodeQueue = Promise.resolve();
   let mapSearchBusy = false;
+  const geocodeMemory = new Map();
   const searchIndex = new WeakMap();
 
   function setMapMessage(message, isError = false) {
@@ -170,6 +180,8 @@
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>'
       }).addTo(map);
       searchMarkerLayer = window.L.layerGroup().addTo(map);
+      precisionLayer = window.L.layerGroup().addTo(map);
+      map.on("zoomend moveend", scheduleMapPrecisionRefresh);
       window.setTimeout(() => map.invalidateSize(), 100);
     } catch {
       map = null;
@@ -732,14 +744,23 @@
 
   function cacheKey(query, countryCode) { return `shroomberg-osm:${(countryCode || "").toLocaleLowerCase()}:${query.toLocaleLowerCase()}`; }
   function readCache(query, countryCode) {
+    const key = cacheKey(query, countryCode);
+    const memoryRecord = geocodeMemory.get(key);
+    if (memoryRecord && Date.now() - memoryRecord.savedAt < CACHE_TTL_MS) return memoryRecord.results;
     try {
-      const record = JSON.parse(localStorage.getItem(cacheKey(query, countryCode)) || "null");
-      if (record && Date.now() - record.savedAt < CACHE_TTL_MS && Array.isArray(record.results)) return record.results;
+      const record = JSON.parse(localStorage.getItem(key) || "null");
+      if (record && Date.now() - record.savedAt < CACHE_TTL_MS && Array.isArray(record.results)) {
+        geocodeMemory.set(key, record);
+        return record.results;
+      }
     } catch { /* Continue if browser storage is unavailable. */ }
     return null;
   }
   function writeCache(query, countryCode, results) {
-    try { localStorage.setItem(cacheKey(query, countryCode), JSON.stringify({ savedAt: Date.now(), results })); }
+    const key = cacheKey(query, countryCode);
+    const record = { savedAt: Date.now(), results };
+    geocodeMemory.set(key, record);
+    try { localStorage.setItem(key, JSON.stringify(record)); }
     catch { /* The map still works when browser storage is full or disabled. */ }
   }
 
@@ -789,10 +810,24 @@
   }
 
   function clearDirectoryMarkers() {
+    precisionGeneration += 1;
+    if (precisionRefreshTimer) window.clearTimeout(precisionRefreshTimer);
+    precisionRefreshTimer = 0;
+    precisionLayer?.clearLayers();
+    precisionPoints.clear();
     if (searchMarkerLayer) {
       searchMarkerLayer.eachLayer((layer) => fadeRemoveLayer(layer, () => searchMarkerLayer?.removeLayer(layer)));
     }
     searchPins.clear();
+  }
+
+  function scheduleMapPrecisionRefresh() {
+    if (!map || !precisionLayer) return;
+    if (precisionRefreshTimer) window.clearTimeout(precisionRefreshTimer);
+    precisionRefreshTimer = window.setTimeout(() => {
+      precisionRefreshTimer = 0;
+      refineMapLocations();
+    }, 320);
   }
 
   function fadeRemoveLayer(layer, removeLayer) {
@@ -818,6 +853,224 @@
       groups.get(key).providers.push(provider);
     }
     return [...groups.values()];
+  }
+
+  function isGeocodableAddress(provider) {
+    const address = clean(provider.streetAddress);
+    return Boolean(address) && !provider.isOnlineOnly &&
+      !/\b(?:p\.?\s*o\.?\s*box|post office box|rpo\s|postal box)\b/i.test(address);
+  }
+
+  function makePrecisionGroups(records, level) {
+    const groups = new Map();
+    for (const provider of records) {
+      if (level === "address" && !isGeocodableAddress(provider)) continue;
+      const query = level === "address"
+        ? mapQuery(provider)
+        : locationText(provider) || [clean(provider.region), clean(provider.mapZone), countryLabel(clean(provider.countryCode))].filter(Boolean).join(", ");
+      if (!query) continue;
+      const countryCode = clean(provider.countryCode);
+      const key = `${countryCode.toLocaleLowerCase()}|${query.toLocaleLowerCase()}`;
+      if (!groups.has(key)) groups.set(key, { key, query, countryCode, level, providers: [] });
+      groups.get(key).providers.push(provider);
+    }
+    return [...groups.values()];
+  }
+
+  function validMapPoint(result) {
+    const lat = Number(result?.lat);
+    const lon = Number(result?.lon);
+    return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+  }
+
+  function cachedPrecisionResult(group) {
+    const cached = readCache(group.query, group.countryCode);
+    if (!cached) return { cached: false, result: null };
+    return { cached: true, result: cached.find(validMapPoint) || null };
+  }
+
+  function refinementPopup(point) {
+    const popup = document.createElement("div");
+    const heading = document.createElement("strong");
+    heading.textContent = `${point.providers.length} ${point.providers.length === 1 ? "provider record" : "provider records"}`;
+    const description = document.createElement("p");
+    description.textContent = point.level === "address"
+      ? "OpenStreetMap address match. This does not verify that the provider operates here or welcomes visitors."
+      : "Approximate city or region point. Zoom in further for recorded street-address matches.";
+    popup.append(heading, description);
+    for (const provider of point.providers.slice(0, 12)) {
+      const link = document.createElement("a");
+      link.href = `#provider/${encodeURIComponent(provider.id)}`;
+      link.textContent = clean(provider.name) || "Unnamed provider";
+      popup.append(link, document.createElement("br"));
+    }
+    if (point.providers.length > 12) {
+      const more = document.createElement("p");
+      more.textContent = `${point.providers.length - 12} more records at this point.`;
+      popup.append(more);
+    }
+    const location = document.createElement("p");
+    location.textContent = point.displayName;
+    popup.append(location);
+    return popup;
+  }
+
+  function addPrecisionMarker(group, result, zoom, bounds) {
+    if (!validMapPoint(result) || !precisionLayer || !window.L) return false;
+    const lat = Number(result.lat);
+    const lon = Number(result.lon);
+    const coordinates = window.L.latLng(lat, lon);
+    if (bounds && !bounds.contains(coordinates)) return false;
+    const key = `${group.level}:${lat.toFixed(5)},${lon.toFixed(5)}`;
+    let point = precisionPoints.get(key);
+    if (!point) {
+      point = {
+        level: group.level,
+        marker: window.L.circleMarker(coordinates, {
+          radius: group.level === "address" ? 8 : 9,
+          color: "#073b20",
+          weight: group.level === "address" ? 2.5 : 2,
+          opacity: group.level === "address" ? 1 : zoom >= ADDRESS_PRECISION_ZOOM ? 0.45 : 0.95,
+          fillColor: group.level === "address" ? "#8cab45" : "#7baa61",
+          fillOpacity: group.level === "address" ? 0.95 : zoom >= ADDRESS_PRECISION_ZOOM ? 0.25 : 0.8,
+          className: group.level === "address" ? "shroomberg-node shroomberg-node-address" : "shroomberg-node"
+        }).addTo(precisionLayer),
+        providers: [],
+        providerIds: new Set(),
+        displayName: clean(result.display_name) || group.query
+      };
+      point.marker.bindPopup(refinementPopup(point));
+      point.marker.bindTooltip("", { permanent: true, direction: "center", className: "shroomberg-node-count" });
+      precisionPoints.set(key, point);
+    }
+    for (const provider of group.providers) {
+      if (point.providerIds.has(provider.id)) continue;
+      point.providerIds.add(provider.id);
+      point.providers.push(provider);
+    }
+    point.marker.setTooltipContent(String(point.providers.length));
+    point.marker.setPopupContent(refinementPopup(point));
+    return true;
+  }
+
+  async function refineMapLocations() {
+    if (!map || !precisionLayer) return;
+    const generation = ++precisionGeneration;
+    const isCurrent = () => generation === precisionGeneration;
+    const zoom = map.getZoom();
+    const bounds = map.getBounds();
+    precisionLayer.clearLayers();
+    precisionPoints.clear();
+
+    for (const point of searchPins.values()) {
+      if (!point.zoneCenter || typeof point.marker.setStyle !== "function") continue;
+      point.marker.setStyle({
+        opacity: zoom >= CITY_PRECISION_ZOOM ? 0.18 : 0.95,
+        fillOpacity: zoom >= CITY_PRECISION_ZOOM ? 0.12 : 0.85
+      });
+    }
+
+    if (zoom < CITY_PRECISION_ZOOM || !activeMapRecords.length) return;
+
+    const localityGroups = makePrecisionGroups(activeMapRecords, "locality");
+    const localityResults = new Map();
+    for (const group of localityGroups) {
+      const cached = cachedPrecisionResult(group);
+      if (!cached.cached) continue;
+      if (cached.result) localityResults.set(group.key, cached.result);
+      if (cached.result) addPrecisionMarker(group, cached.result, zoom, bounds);
+    }
+
+    const visibleZoneProviderIds = new Set();
+    for (const point of searchPins.values()) {
+      if (!point.zoneCenter || !bounds.contains(point.marker.getLatLng())) continue;
+      for (const provider of point.providers) visibleZoneProviderIds.add(provider.id);
+    }
+    const visibleZoneGroups = localityGroups
+      .filter((group) => group.providers.some((provider) => visibleZoneProviderIds.has(provider.id)))
+      .filter((group) => !cachedPrecisionResult(group).cached)
+      .sort((a, b) => b.providers.length - a.providers.length || a.query.localeCompare(b.query));
+    const cityBatchSize = zoom >= 8 ? CITY_LOOKUP_BATCH + 2 : CITY_LOOKUP_BATCH;
+    const cityBatch = visibleZoneGroups.slice(0, cityBatchSize);
+    const remainingCityGroups = Math.max(0, visibleZoneGroups.length - cityBatch.length);
+    let completedCityLookups = 0;
+
+    if (cityBatch.length) {
+      setMapMessage(`Resolving up to ${cityBatch.length} city or region points for this view…`);
+      const cityJobs = cityBatch.map(async (group) => {
+        if (!isCurrent()) return;
+        try {
+          const { results } = await fetchGeocode(group.query, group.countryCode, isCurrent);
+          const result = results.find(validMapPoint) || null;
+          if (result) localityResults.set(group.key, result);
+          if (isCurrent() && result) addPrecisionMarker(group, result, zoom, bounds);
+          completedCityLookups += 1;
+          if (isCurrent() && (completedCityLookups === cityBatch.length || completedCityLookups % 3 === 0)) {
+            setMapMessage(`Zoomed map: ${precisionPoints.size.toLocaleString()} city or region points shown. Street-address points appear closer in.`);
+          }
+        } catch {
+          completedCityLookups += 1;
+        }
+      });
+      await Promise.allSettled(cityJobs);
+      if (!isCurrent()) return;
+      for (const group of cityBatch) {
+        const cached = cachedPrecisionResult(group);
+        if (cached.result) localityResults.set(group.key, cached.result);
+      }
+    }
+
+    if (zoom >= ADDRESS_PRECISION_ZOOM) {
+      const visibleLocalityProviders = localityGroups
+        .filter((group) => {
+          const result = localityResults.get(group.key) || cachedPrecisionResult(group).result;
+          return result && bounds.contains(window.L.latLng(Number(result.lat), Number(result.lon)));
+        })
+        .flatMap((group) => group.providers);
+      const addressGroups = makePrecisionGroups(visibleLocalityProviders, "address");
+      let cachedAddressCount = 0;
+      for (const group of addressGroups) {
+        const cached = cachedPrecisionResult(group);
+        if (cached.result && addPrecisionMarker(group, cached.result, zoom, bounds)) cachedAddressCount += 1;
+      }
+      const pendingAddressGroups = addressGroups
+        .filter((group) => !cachedPrecisionResult(group).cached)
+        .sort((a, b) => b.providers.length - a.providers.length || a.query.localeCompare(b.query));
+      const addressBatch = pendingAddressGroups.slice(0, ADDRESS_LOOKUP_BATCH);
+      if (addressBatch.length) setMapMessage(`Resolving up to ${addressBatch.length} visible street-address matches…`);
+      for (const group of addressBatch) {
+        if (!isCurrent()) return;
+        try {
+          const { results } = await fetchGeocode(group.query, group.countryCode, isCurrent);
+          if (!isCurrent()) return;
+          const result = results.find((candidate) => validMapPoint(candidate) &&
+            !coarseResultTypes.has(clean(candidate.addresstype).toLocaleLowerCase())) || null;
+          if (result) addPrecisionMarker(group, result, zoom, bounds);
+        } catch { /* Keep the city/region point when an address match fails. */ }
+      }
+      if (!isCurrent()) return;
+      const remainingAddressGroups = Math.max(0, pendingAddressGroups.length - addressBatch.length);
+      const mappedAddresses = [...precisionPoints.values()].filter((point) => point.level === "address").length;
+      setMapMessage(mappedAddresses
+        ? `Zoomed map: ${mappedAddresses.toLocaleString()} street-address match${mappedAddresses === 1 ? "" : "es"} shown. These points do not verify provider access or operating status.`
+        : "Zoomed map: city and region points are shown. No street-address matches were found in this view.");
+      if (remainingAddressGroups) {
+        setMapMessage(`Showing ${mappedAddresses.toLocaleString()} street-address matches. Zoom or pan to refine more locations.`);
+      }
+      if (!mappedAddresses && cachedAddressCount) {
+        setMapMessage("City and region points are shown here; address matches are approximate or unavailable.");
+      }
+      return;
+    }
+
+    if (!isCurrent()) return;
+    const mappedCities = [...precisionPoints.values()].filter((point) => point.level === "locality").length;
+    const message = mappedCities
+      ? `Zoomed map: ${mappedCities.toLocaleString()} city or region points shown. Zoom in closer for street-address matches.`
+      : "Zoom in on a service-zone marker to reveal city and region points.";
+    setMapMessage(remainingCityGroups
+      ? `${message} Zoom or pan again to refine additional locations.`
+      : message);
   }
 
   function searchMarkerPopup(point) {
@@ -948,6 +1201,7 @@
   }
 
   function scheduleSearchMapUpdate(records, totalMatches, invalidQuery = false, clearMatches = true) {
+    activeMapRecords = Array.isArray(records) ? records.slice() : [];
     searchMapGeneration += 1;
     if (searchMapTimer) window.clearTimeout(searchMapTimer);
     if (!map || !searchMarkerLayer) return;
