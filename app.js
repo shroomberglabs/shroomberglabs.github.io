@@ -170,6 +170,9 @@
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap contributors</a>'
       }).addTo(map);
       searchMarkerLayer = window.L.layerGroup().addTo(map);
+      map.on("zoomend", () => {
+        if (providers.length) scheduleSearchMapUpdate(filtered, filtered.length, false, false, true);
+      });
       window.setTimeout(() => map.invalidateSize(), 100);
     } catch {
       map = null;
@@ -534,9 +537,13 @@
     const location = document.createElement("div");
     location.className = "detail-location";
     const addressTitle = document.createElement("strong");
-    addressTitle.textContent = clean(provider.streetAddress) ? (addressNames[provider.addressKind] || "Recorded address") : "No street address verified";
+    addressTitle.textContent = clean(provider.streetAddress) ? (provider.addressKind === "unclassified" ? "Recorded address" : (addressNames[provider.addressKind] || "Recorded address")) : "No street address verified";
     const address = document.createElement("p");
-    address.textContent = [clean(provider.streetAddress), clean(provider.city), clean(provider.region), countryLabel(clean(provider.countryCode)), clean(provider.postalCode)].filter(Boolean).join(", ") || "No location is recorded.";
+    const addressParts = [];
+    for (const part of [provider.streetAddress, provider.city, provider.region, provider.postalCode, countryLabel(clean(provider.countryCode))].map(clean).filter(Boolean)) {
+      if (!addressParts.some((existing) => existing.toLocaleLowerCase().includes(part.toLocaleLowerCase()))) addressParts.push(part);
+    }
+    address.textContent = addressParts.join(", ") || "No location is recorded.";
     const note = document.createElement("p");
     note.className = "type-note";
     note.textContent = serviceAddressNote(provider) || "Use the recorded city or operating region as the location context.";
@@ -575,31 +582,23 @@
     if (provider.geoPrecision) flags.append(tag("Source precision: " + clean(provider.geoPrecision), "soft"));
     card.append(flags);
 
+    const description = clean(provider.description);
+    const services = clean(provider.servicesSummary);
+    if (!services || !services.includes(description)) appendDetailSection(card, "About", description);
+    appendDetailSection(card, "Services", services);
+    appendDetailSection(card, "Business information", provider.businessStructureSummary);
+    appendDetailSection(card, "Availability", provider.availabilitySummary);
     appendDetailSection(card, "Location context", provider.locationContext);
     appendDetailSection(card, "Research note", provider.researchNote);
-
-    const coreFields = new Set([
-      "name", "category", "countryCode", "region", "city", "streetAddress", "postalCode", "addressKind",
-      "website", "isOnlineOnly", "locationContext", "researchNote"
-    ]);
-    const extraFields = Object.entries(provider).filter(([key, value]) => {
-      if (coreFields.has(key) || /(?:url|uri)$/i.test(key)) return false;
-      return value !== null && value !== undefined && value !== "";
-    });
-    if (extraFields.length) {
-      const section = document.createElement("div");
-      section.className = "detail-section";
+    if (clean(provider.phone)) {
+      const phoneSection = document.createElement("div");
+      phoneSection.className = "detail-section";
       const heading = document.createElement("h3");
-      heading.textContent = "Record details";
-      section.append(heading);
-      for (const [key, value] of extraFields) {
-        const row = document.createElement("p");
-        const label = document.createElement("strong");
-        label.textContent = `${key === "id" ? "Record ID" : humanize(key)}: `;
-        row.append(label, document.createTextNode(typeof value === "boolean" ? (value ? "Yes" : "No") : flattenValue(value).join(", ")));
-        section.append(row);
-      }
-      card.append(section);
+      heading.textContent = "Contact";
+      const phone = document.createElement("p");
+      phone.textContent = clean(provider.phone);
+      phoneSection.append(heading, phone);
+      card.append(phoneSection);
     }
 
     const sourceSection = document.createElement("div");
@@ -947,7 +946,7 @@
     }
   }
 
-  function scheduleSearchMapUpdate(records, totalMatches, invalidQuery = false, clearMatches = true) {
+  function scheduleSearchMapUpdate(records, totalMatches, invalidQuery = false, clearMatches = true, preserveView = false) {
     searchMapGeneration += 1;
     if (searchMapTimer) window.clearTimeout(searchMapTimer);
     if (!map || !searchMarkerLayer) return;
@@ -981,7 +980,8 @@
         continue;
       }
       const zone = clean(provider.mapZone) || locationText(provider) || "Recorded location";
-      const key = `${zone.toLocaleLowerCase()}|${lat.toFixed(5)},${lon.toFixed(5)}`;
+      const projected = map.project([lat, lon], map.getZoom());
+      const key = `${Math.floor(projected.x / 55)},${Math.floor(projected.y / 55)}`;
       if (!zones.has(key)) zones.set(key, { zone, lat, lon, providers: [] });
       zones.get(key).providers.push(provider);
     }
@@ -1001,13 +1001,14 @@
         zoneCenter: point.providers.every((provider) => clean(provider.mapPrecision) === "approximate_zone_center"),
         displayName: point.zone
       };
+      if (count > 1) node.on("click", () => { if (map.getZoom() < 15) map.setView([point.lat, point.lon], map.getZoom() + 2); });
       node.bindPopup(searchMarkerPopup(pin));
       node.bindTooltip(String(count), { permanent: true, direction: "center", className: "shroomberg-node-count" });
       searchPins.set(`${point.lat.toFixed(5)},${point.lon.toFixed(5)}`, pin);
     }
 
-    if (searchPins.size) fitDirectorySearchMarkers();
-    else map.setView([22, 0], 2);
+    if (!preserveView && searchPins.size) fitDirectorySearchMarkers();
+    else if (!preserveView) map.setView([22, 0], 2);
     const mapped = records.length - unmapped;
     const prefix = totalMatches === providers.length && records.length === providers.length
       ? `Showing all ${mapped.toLocaleString()} providers`
@@ -1369,5 +1370,6 @@
 
   start();
 })();
+
 
 
