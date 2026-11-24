@@ -1260,12 +1260,15 @@
 
   async function loadDirectory() {
     setSearchFeedback("");
+    let stage = "requesting providers.json";
     try {
       const response = await fetch(DATA_URL, { cache: "no-cache" });
-      if (!response.ok) throw new Error("data");
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      stage = "reading providers.json";
       const payload = await response.json();
       const records = Array.isArray(payload) ? payload : payload.records;
-      if (!Array.isArray(records) || records.length === 0) throw new Error("data");
+      if (!Array.isArray(records) || records.length === 0) throw new Error("No provider records found");
+      stage = "preparing provider records";
       providers = records.map((record) => {
         const normalized = { ...record };
         for (const [key, value] of Object.entries(record)) {
@@ -1277,14 +1280,25 @@
         return normalized;
       });
       setStats(providers);
-      $("#data-as-of").textContent = formatSnapshotDate(payload.asOf);
+      const asOf = $("#data-as-of");
+      if (asOf) asOf.textContent = formatSnapshotDate(payload.asOf);
+      stage = "preparing filters";
       populateFilters();
       updateProviderTypeCounts();
+      stage = "rendering the map";
       renderList();
+      stage = "opening the selected profile";
       handleProviderRoute();
+      stage = "searching the map";
       if (els.mapSearch.value) await searchMap(els.mapSearch.value);
-    } catch {
-      showDataError();
+    } catch (error) {
+      console.error(`Shroomberg error while ${stage}:`, error);
+      if (providers.length) {
+        setMapMessage(`Provider records loaded, but a problem occurred while ${stage}. Please retry.`, true);
+      } else {
+        showDataError();
+        setMapMessage(`Provider records could not load while ${stage}. Please retry.`, true);
+      }
     }
   }
 
