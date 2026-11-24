@@ -974,13 +974,13 @@
     const zones = new Map();
     let unmapped = 0;
     for (const provider of records) {
-      const lat = Number(provider.mapLatitude);
-      const lon = Number(provider.mapLongitude);
+      const lat = provider.mapLatitude == null || provider.mapLatitude === "" ? NaN : Number(provider.mapLatitude);
+      const lon = provider.mapLongitude == null || provider.mapLongitude === "" ? NaN : Number(provider.mapLongitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
         unmapped += 1;
         continue;
       }
-      const zone = clean(provider.mapZone) || "Service area";
+      const zone = clean(provider.mapZone) || locationText(provider) || "Recorded location";
       const key = `${zone.toLocaleLowerCase()}|${lat.toFixed(5)},${lon.toFixed(5)}`;
       if (!zones.has(key)) zones.set(key, { zone, lat, lon, providers: [] });
       zones.get(key).providers.push(provider);
@@ -997,8 +997,8 @@
         marker: node,
         providers: point.providers,
         providerIds: new Set(point.providers.map((provider) => provider.id)),
-        coarse: true,
-        zoneCenter: true,
+        coarse: point.providers.some((provider) => !["street", "address", "building"].includes(clean(provider.geoPrecision).toLowerCase())),
+        zoneCenter: point.providers.every((provider) => clean(provider.mapPrecision) === "approximate_zone_center"),
         displayName: point.zone
       };
       node.bindPopup(searchMarkerPopup(pin));
@@ -1012,8 +1012,8 @@
     const prefix = totalMatches === providers.length && records.length === providers.length
       ? `Showing all ${mapped.toLocaleString()} providers`
       : `Showing ${mapped.toLocaleString()} matching provider${mapped === 1 ? "" : "s"}`;
-    let message = `${prefix} across ${zones.size.toLocaleString()} service zone${zones.size === 1 ? "" : "s"}. Markers are approximate zone centers.`;
-    if (unmapped) message += ` ${unmapped.toLocaleString()} matching record${unmapped === 1 ? " has" : "s have"} no saved zone coordinates.`;
+    let message = `${prefix} across ${zones.size.toLocaleString()} mapped location${zones.size === 1 ? "" : "s"}. Location precision varies by record.`;
+    if (unmapped) message += ` ${unmapped.toLocaleString()} matching record${unmapped === 1 ? " has" : "s have"} no saved coordinates.`;
     setMapMessage(message, unmapped > 0);
   }
 
@@ -1264,8 +1264,18 @@
       const response = await fetch(DATA_URL, { cache: "no-cache" });
       if (!response.ok) throw new Error("data");
       const payload = await response.json();
-      if (!Array.isArray(payload.records) || payload.records.length === 0) throw new Error("data");
-      providers = payload.records;
+      const records = Array.isArray(payload) ? payload : payload.records;
+      if (!Array.isArray(records) || records.length === 0) throw new Error("data");
+      providers = records.map((record) => {
+        const normalized = { ...record };
+        for (const [key, value] of Object.entries(record)) {
+          const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+          if (!(camelKey in normalized)) normalized[camelKey] = value;
+        }
+        if (normalized.mapLatitude == null) normalized.mapLatitude = normalized.latitude;
+        if (normalized.mapLongitude == null) normalized.mapLongitude = normalized.longitude;
+        return normalized;
+      });
       setStats(providers);
       $("#data-as-of").textContent = formatSnapshotDate(payload.asOf);
       populateFilters();
@@ -1345,4 +1355,5 @@
 
   start();
 })();
+
 
