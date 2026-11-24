@@ -171,7 +171,7 @@
       }).addTo(map);
       searchMarkerLayer = window.L.layerGroup().addTo(map);
       map.on("zoomend", () => {
-        if (providers.length) scheduleSearchMapUpdate(filtered, filtered.length, false, false, true);
+      if (providers.length && filtered.length) scheduleSearchMapUpdate(filtered, filtered.length, false, false, true);
       });
       window.setTimeout(() => map.invalidateSize(), 100);
     } catch {
@@ -587,6 +587,23 @@
     if (!services || !services.includes(description)) appendDetailSection(card, "About", description);
     appendDetailSection(card, "Services", services);
     appendDetailSection(card, "Business information", provider.businessStructureSummary);
+    const rawAvailability = provider.availabilityStars ?? provider.availability_stars;
+    const availabilityScore = rawAvailability === null || rawAvailability === undefined || rawAvailability === "" ? null : Number(rawAvailability);
+    const ratingSection = document.createElement("section");
+    ratingSection.className = "detail-section";
+    const ratingHeading = document.createElement("h3");
+    ratingHeading.textContent = "Availability rating";
+    const ratingText = document.createElement("p");
+    if (Number.isInteger(availabilityScore) && availabilityScore >= 1 && availabilityScore <= 5) {
+      ratingText.textContent = `${"★".repeat(availabilityScore)}${"☆".repeat(5 - availabilityScore)}  ${availabilityScore} out of 5`;
+      ratingText.setAttribute("aria-label", `Availability: ${availabilityScore} out of 5 stars`);
+    } else {
+      ratingText.textContent = "Not yet rated";
+    }
+    const ratingExplanation = document.createElement("p");
+    ratingExplanation.textContent = "Availability reflects recorded legal status and public access. It is separate from community reviews.";
+    ratingSection.append(ratingHeading, ratingText, ratingExplanation);
+    card.append(ratingSection);
     appendDetailSection(card, "Availability", provider.availabilitySummary);
     appendDetailSection(card, "Location context", provider.locationContext);
     appendDetailSection(card, "Research note", provider.researchNote);
@@ -951,7 +968,7 @@
     if (searchMapTimer) window.clearTimeout(searchMapTimer);
     if (!map || !searchMarkerLayer) return;
     clearDirectoryMarkers();
-    if (marker) {
+    if (marker && !preserveView) {
       const oldMarker = marker;
       marker = null;
       fadeRemoveLayer(oldMarker, () => map?.removeLayer(oldMarker));
@@ -981,13 +998,18 @@
       }
       const zone = clean(provider.mapZone) || locationText(provider) || "Recorded location";
       const projected = map.project([lat, lon], map.getZoom());
-      const key = `${Math.floor(projected.x / 55)},${Math.floor(projected.y / 55)}`;
-      if (!zones.has(key)) zones.set(key, { zone, lat, lon, providers: [] });
+      const cellSize = map.getZoom() >= 16 ? 8 : 55;
+      const key = `${Math.floor(projected.x / cellSize)},${Math.floor(projected.y / cellSize)}`;
+      if (!zones.has(key)) zones.set(key, { zone, lat, lon, latSum: 0, lonSum: 0, providers: [] });
+      zones.get(key).latSum += lat;
+      zones.get(key).lonSum += lon;
       zones.get(key).providers.push(provider);
     }
 
     for (const point of zones.values()) {
       const count = point.providers.length;
+      point.lat = point.latSum / count;
+      point.lon = point.lonSum / count;
       const radius = Math.max(9, Math.min(23, 8 + Math.log2(count + 1) * 2.2));
       const node = window.L.circleMarker([point.lat, point.lon], {
         radius, color: "#0a4824", weight: 2, opacity: 0.95,
@@ -1370,6 +1392,7 @@
 
   start();
 })();
+
 
 
 
