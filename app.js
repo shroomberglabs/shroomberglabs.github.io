@@ -59,7 +59,13 @@
     verified: ["businessOperatingVerified"],
     followup: ["followUpStatus", "followUpReason"],
     updated: ["updatedAt"],
-    contact: ["contactReviewedAt"]
+    contact: ["contactEmail", "contactFormUrl", "phone"],
+    offering: ["offeringCategories", "offeringPrimaryCategory", "servicesSummary", "productKeys"],
+    service: ["offeringCategories", "offeringPrimaryCategory", "servicesSummary", "description"],
+    availability: ["availabilityStars", "availabilitySummary", "bookingAvailability"],
+    stars: ["availabilityStars"],
+    legality: ["marketLegality", "legalStatus"],
+    access: ["publicAccessTier", "accessRestrictions"]
   };
   const hasAliases = new Set(["address", "website", "source", "region", "location", "evidence", "online", "verified", "service", "notes", "closed"]);
   const $ = (selector) => document.querySelector(selector);
@@ -138,6 +144,7 @@
   let lastGeocodeAt = 0;
   let geocodeQueue = Promise.resolve();
   let mapSearchBusy = false;
+  let activeMapRecords = [];
   const searchIndex = new WeakMap();
 
   function setMapMessage(message, isError = false) {
@@ -161,7 +168,7 @@
       return;
     }
     try {
-      map = window.L.map("map", { scrollWheelZoom: false, zoomControl: true }).setView([22, 0], 2);
+      map = window.L.map("map", { scrollWheelZoom: true, zoomControl: true }).setView([22, 0], 2);
       const mapContainer = map.getContainer();
       mapContainer.style.height = window.innerWidth <= 660 ? "min(60vh, 520px)" : "min(72vh, 760px)";
       mapContainer.style.minHeight = window.innerWidth <= 660 ? "300px" : "460px";
@@ -171,7 +178,7 @@
       }).addTo(map);
       searchMarkerLayer = window.L.layerGroup().addTo(map);
       map.on("zoomend", () => {
-      if (providers.length && filtered.length) scheduleSearchMapUpdate(filtered, filtered.length, false, false, true);
+        if (activeMapRecords.length) scheduleSearchMapUpdate(activeMapRecords, activeMapRecords.length, false, false, true);
       });
       window.setTimeout(() => map.invalidateSize(), 100);
     } catch {
@@ -293,6 +300,14 @@
           tokens.push({ kind: normalized, value: valueKey, negative });
           continue;
         }
+        if (normalized === "stars" || normalized === "availabilitystars") {
+          const comparison = value.match(/^(>=|<=|>|<|=)?([1-5](?:\.\d+)?)$/);
+          if (!comparison || Number(comparison[2]) > 5) {
+            return { tokens: [], error: `Use a score from 1 to 5, for example stars:>=4.` };
+          }
+          tokens.push({ kind: "stars", operator: comparison[1] || "=", value: Number(comparison[2]), negative });
+          continue;
+        }
         const keys = resolveFieldKeys(field);
         if (!keys.length) {
           return { tokens: [], error: `I don't recognize “${field}:” as a filter. Try name, category, country, region, city, address, website, status, kind, evidence, source, or a workbook field name.` };
@@ -347,6 +362,16 @@
       let matched = false;
       if (token.kind === "text") matched = fullText.includes(token.value);
       else if (token.kind === "field") matched = fieldValues(provider, token.keys).some((value) => value.includes(token.value));
+      else if (token.kind === "stars") {
+        const score = provider.availabilityStars === null || provider.availabilityStars === undefined || provider.availabilityStars === ""
+          ? NaN : Number(provider.availabilityStars);
+        if (Number.isFinite(score) && score >= 1 && score <= 5) {
+          matched = token.operator === ">=" ? score >= token.value
+            : token.operator === "<=" ? score <= token.value
+              : token.operator === ">" ? score > token.value
+                : token.operator === "<" ? score < token.value : score === token.value;
+        }
+      }
       else if (token.kind === "has") matched = hasField(provider, token.value);
       else if (token.kind === "is") matched = isFlag(provider, token.value);
       return token.negative ? !matched : matched;
@@ -431,13 +456,16 @@
 
   function appendDetailSection(container, heading, text) {
     if (!clean(text)) return;
-    const section = document.createElement("div");
+    const section = document.createElement("section");
     section.className = "detail-section";
     const h = document.createElement("h3");
     h.textContent = heading;
-    const p = document.createElement("p");
-    p.textContent = clean(text);
-    section.append(h, p);
+    section.append(h);
+    for (const paragraph of clean(text).split(/\n\s*\n/).map(clean).filter(Boolean)) {
+      const p = document.createElement("p");
+      p.textContent = paragraph;
+      section.append(p);
+    }
     container.append(section);
   }
 
@@ -556,7 +584,7 @@
     mapButton.type = "button";
     mapButton.className = "button button-primary";
     mapButton.textContent = "Show on map";
-    mapButton.addEventListener("click", () => locateProvider(provider));
+    mapButton.addEventListener("click", () => { dismissProfile(); locateProvider(provider); });
     actions.append(mapButton);
     const osmLink = makeLink(openStreetMapSearch(provider), "Open in OpenStreetMap ↗", "button button-outline");
     if (osmLink) actions.append(osmLink);
@@ -586,6 +614,25 @@
     const services = clean(provider.servicesSummary);
     if (!services || !services.includes(description)) appendDetailSection(card, "About", description);
     appendDetailSection(card, "Services", services);
+    const offerings = Array.isArray(provider.offeringCategories) ? provider.offeringCategories : [];
+    if (offerings.length) {
+      const offeringSection = document.createElement("section");
+      offeringSection.className = "detail-section";
+      const heading = document.createElement("h3");
+      heading.textContent = "Services and products";
+      const items = document.createElement("div");
+      items.className = "detail-flags";
+      const statuses = provider.offeringCategoryStatus && typeof provider.offeringCategoryStatus === "object" ? provider.offeringCategoryStatus : {};
+      for (const value of [...new Set(offerings.filter((item) => typeof item === "string" && clean(item)))]) {
+        const status = clean(statuses[value]);
+        const qualifier = status === "documented" ? "" : status === "category_inferred" ? " · inferred" : " · directory classification";
+        items.append(tag(humanize(value) + qualifier, "soft"));
+      }
+      const note = document.createElement("p");
+      note.textContent = "Offerings are based on the directory record. Confirm current services and availability with the provider.";
+      offeringSection.append(heading, items, note);
+      card.append(offeringSection);
+    }
     appendDetailSection(card, "Business information", provider.businessStructureSummary);
     const rawAvailability = provider.availabilityStars ?? provider.availability_stars;
     const availabilityScore = rawAvailability === null || rawAvailability === undefined || rawAvailability === "" ? null : Number(rawAvailability);
@@ -594,27 +641,52 @@
     const ratingHeading = document.createElement("h3");
     ratingHeading.textContent = "Availability rating";
     const ratingText = document.createElement("p");
-    if (Number.isInteger(availabilityScore) && availabilityScore >= 1 && availabilityScore <= 5) {
+    if (clean(provider.availabilityRatingStatus).toLowerCase() !== "unrated" && Number.isInteger(availabilityScore) && availabilityScore >= 1 && availabilityScore <= 5) {
       ratingText.textContent = `${"★".repeat(availabilityScore)}${"☆".repeat(5 - availabilityScore)}  ${availabilityScore} out of 5`;
       ratingText.setAttribute("aria-label", `Availability: ${availabilityScore} out of 5 stars`);
     } else {
       ratingText.textContent = "Not yet rated";
     }
     const ratingExplanation = document.createElement("p");
-    ratingExplanation.textContent = "Availability reflects recorded legal status and public access. It is separate from community reviews.";
+    ratingExplanation.textContent = "This directory score reflects recorded legal status and public access. It is not a customer review or proof of current licensing or availability.";
     ratingSection.append(ratingHeading, ratingText, ratingExplanation);
+    if (provider.availabilityRatingProvisional === true || clean(provider.availabilityConfidence).toLowerCase() === "low") {
+      const note = document.createElement("p");
+      note.textContent = "This assessment is provisional or has low confidence; confirm details with the provider.";
+      ratingSection.append(note);
+    }
     card.append(ratingSection);
     appendDetailSection(card, "Availability", provider.availabilitySummary);
     appendDetailSection(card, "Location context", provider.locationContext);
     appendDetailSection(card, "Research note", provider.researchNote);
-    if (clean(provider.phone)) {
+    if (clean(provider.phone) || clean(provider.contactEmail) || safeHttpUrl(provider.contactFormUrl)) {
       const phoneSection = document.createElement("div");
       phoneSection.className = "detail-section";
       const heading = document.createElement("h3");
       heading.textContent = "Contact";
-      const phone = document.createElement("p");
-      phone.textContent = clean(provider.phone);
-      phoneSection.append(heading, phone);
+      phoneSection.append(heading);
+      const phoneValue = clean(provider.phone);
+      if (phoneValue) {
+        const row = document.createElement("p");
+        if (/^\+?[\d() .-]{3,40}$/.test(phoneValue)) {
+          const link = document.createElement("a");
+          link.href = `tel:${phoneValue.replace(/[^+\d]/g, "")}`;
+          link.textContent = phoneValue;
+          row.append(link);
+        } else row.textContent = phoneValue;
+        phoneSection.append(row);
+      }
+      const email = clean(provider.contactEmail);
+      if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(email)) {
+        const row = document.createElement("p");
+        const link = document.createElement("a");
+        link.href = `mailto:${encodeURIComponent(email)}`;
+        link.textContent = email;
+        row.append(link);
+        phoneSection.append(row);
+      }
+      const formLink = makeLink(provider.contactFormUrl, "Contact form");
+      if (formLink) phoneSection.append(formLink);
       card.append(phoneSection);
     }
 
@@ -632,6 +704,12 @@
       seen.add(normalized);
       links.append(makeLink(normalized, humanize(key)));
     }
+    for (const value of Array.isArray(provider.availabilityRatingSources) ? provider.availabilityRatingSources : []) {
+      const normalized = safeHttpUrl(value);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      links.append(makeLink(normalized, "Availability assessment source"));
+    }
     if (links.childElementCount) sourceSection.append(sourceHeading, links);
     else {
       const empty = document.createElement("p");
@@ -639,6 +717,35 @@
       sourceSection.append(sourceHeading, empty);
     }
     card.append(sourceSection);
+
+    const externalRatings = Array.isArray(provider.externalReviewRatings) ? provider.externalReviewRatings : [];
+    const validExternalRatings = externalRatings.filter((entry) => entry && typeof entry === "object" && entry.rating !== null && entry.rating !== undefined &&
+      Number.isFinite(Number(entry.rating)) && Number.isFinite(Number(entry.max_rating ?? entry.maxRating)) &&
+      Number(entry.max_rating ?? entry.maxRating) > 0 && Number(entry.rating) >= 0 &&
+      Number(entry.rating) <= Number(entry.max_rating ?? entry.maxRating) && safeHttpUrl(entry.source_url ?? entry.sourceUrl));
+    if (validExternalRatings.length) {
+      const externalSection = document.createElement("section");
+      externalSection.className = "detail-section";
+      const heading = document.createElement("h3");
+      heading.textContent = "Ratings from other sites";
+      externalSection.append(heading);
+      for (const entry of validExternalRatings) {
+        const row = document.createElement("p");
+        const max = Number(entry.max_rating ?? entry.maxRating);
+        const count = Number(entry.review_count ?? entry.reviewCount);
+        const label = `${clean(entry.platform) || "External source"}: ${Number(entry.rating)} / ${max}${Number.isInteger(count) && count >= 0 ? ` · ${count} reviews` : ""}`;
+        const link = makeLink(entry.source_url ?? entry.sourceUrl, label);
+        if (link) row.append(link);
+        if (clean(entry.scope)) row.append(document.createTextNode(` — ${clean(entry.scope)}`));
+        if (clean(entry.observed_at ?? entry.observedAt)) row.append(document.createTextNode(` (recorded ${clean(entry.observed_at ?? entry.observedAt)})`));
+        if (clean(entry.note)) row.append(document.createTextNode(`. ${clean(entry.note)}`));
+        externalSection.append(row);
+      }
+      const note = document.createElement("p");
+      note.textContent = "These third-party ratings are separate from Shroomberg community reviews.";
+      externalSection.append(note);
+      card.append(externalSection);
+    }
 
     const reviewSection = document.createElement("section");
     reviewSection.className = "detail-section";
@@ -841,22 +948,20 @@
     const heading = document.createElement("strong");
     heading.textContent = `${point.providers.length} matching ${point.providers.length === 1 ? "provider" : "providers"}`;
     const precision = document.createElement("p");
-    precision.textContent = point.zoneCenter
+    precision.textContent = point.providers.length > 1 && !point.zoneCenter
+      ? "Grouped map points; zoom in or choose a provider below. Locations may be approximate."
+      : point.zoneCenter
       ? "Approximate service-zone center; this is not a verified provider venue."
       : point.coarse
         ? "Approximate city or region point from OpenStreetMap; not a verified provider venue."
-        : "Address match from OpenStreetMap; confirm details before visiting.";
+        : "Saved map location; confirm the address and visitor access before visiting.";
     popup.append(heading, precision);
-    for (const provider of point.providers.slice(0, 12)) {
+    for (const provider of point.providers) {
       const link = document.createElement("a");
       link.href = `#provider/${encodeURIComponent(provider.id)}`;
       link.textContent = clean(provider.name) || "Unnamed provider";
+      link.addEventListener("click", (event) => { event.preventDefault(); selectProvider(provider); });
       popup.append(link, document.createElement("br"));
-    }
-    if (point.providers.length > 12) {
-      const more = document.createElement("p");
-      more.textContent = `${point.providers.length - 12} more matches; narrow the search to see fewer listings at this point.`;
-      popup.append(more);
     }
     const place = document.createElement("p");
     place.textContent = point.displayName;
@@ -964,7 +1069,9 @@
   }
 
   function scheduleSearchMapUpdate(records, totalMatches, invalidQuery = false, clearMatches = true, preserveView = false) {
+    if (!preserveView) activeMapRecords = records.slice();
     searchMapGeneration += 1;
+    const generation = searchMapGeneration;
     if (searchMapTimer) window.clearTimeout(searchMapTimer);
     if (!map || !searchMarkerLayer) return;
     clearDirectoryMarkers();
@@ -1000,9 +1107,10 @@
       const projected = map.project([lat, lon], map.getZoom());
       const cellSize = map.getZoom() >= 16 ? 8 : 55;
       const key = `${Math.floor(projected.x / cellSize)},${Math.floor(projected.y / cellSize)}`;
-      if (!zones.has(key)) zones.set(key, { zone, lat, lon, latSum: 0, lonSum: 0, providers: [] });
+      if (!zones.has(key)) zones.set(key, { zone, lat, lon, latSum: 0, lonSum: 0, providers: [], coordinates: [] });
       zones.get(key).latSum += lat;
       zones.get(key).lonSum += lon;
+      zones.get(key).coordinates.push([lat, lon]);
       zones.get(key).providers.push(provider);
     }
 
@@ -1019,18 +1127,27 @@
         marker: node,
         providers: point.providers,
         providerIds: new Set(point.providers.map((provider) => provider.id)),
-        coarse: point.providers.some((provider) => !["street", "address", "building"].includes(clean(provider.geoPrecision).toLowerCase())),
+        coarse: point.providers.some((provider) => !/^(?:street|address|address_point|building|matched_address|osm_house_number|osm_reverse_house_number_verified_2026|osm_exact_house_number_verified_2026|national_address_point|plus_code_3m|recovered_short_plus_code|operator_published_business_gps|office_building_operator_gps)$/.test(clean(provider.mapPointPrecision || provider.geoPrecision).toLowerCase())),
         zoneCenter: point.providers.every((provider) => clean(provider.mapPrecision) === "approximate_zone_center"),
         displayName: point.zone
       };
-      if (count > 1) node.on("click", () => { if (map.getZoom() < 15) map.setView([point.lat, point.lon], map.getZoom() + 2); });
-      node.bindPopup(searchMarkerPopup(pin));
+      const distinctCoordinates = new Set(point.coordinates.map(([lat, lon]) => `${lat.toFixed(6)},${lon.toFixed(6)}`));
+      if (count === 1) {
+        node.on("click", () => selectProvider(point.providers[0]));
+      } else if (distinctCoordinates.size > 1 && map.getZoom() < map.getMaxZoom()) {
+        node.on("click", () => map.setView([point.lat, point.lon], Math.min(map.getZoom() + 2, map.getMaxZoom())));
+      } else {
+        node.bindPopup(searchMarkerPopup(pin), { maxHeight: 260 });
+      }
       node.bindTooltip(String(count), { permanent: true, direction: "center", className: "shroomberg-node-count" });
-      searchPins.set(`${point.lat.toFixed(5)},${point.lon.toFixed(5)}`, pin);
+      searchPins.set(`${point.lat.toFixed(8)},${point.lon.toFixed(8)}:${searchPins.size}`, pin);
     }
 
     if (!preserveView && searchPins.size) fitDirectorySearchMarkers();
     else if (!preserveView) map.setView([22, 0], 2);
+    // Fitting the map can trigger zoomend synchronously and redraw the points.
+    // The nested redraw owns the latest count and must not be overwritten.
+    if (generation !== searchMapGeneration) return;
     const mapped = records.length - unmapped;
     const prefix = totalMatches === providers.length && records.length === providers.length
       ? `Showing all ${mapped.toLocaleString()} providers`
@@ -1081,7 +1198,7 @@
     const precision = coarse
       ? "City/region-level point; not a verified provider venue."
       : provider
-        ? "OSM match for the saved address; this does not verify or change the source record."
+        ? "Saved map point for this record; this does not verify the address or current operating status."
         : "Place selected from OpenStreetMap search; provider records were not changed.";
     setMapMessage(precision);
   }
@@ -1118,6 +1235,15 @@
   async function locateProvider(provider) {
     if (!map) {
       setMapMessage("The interactive map is unavailable. Use the OpenStreetMap search link in this profile.", true);
+      return;
+    }
+    const saved = validCoordinatePair(provider.mapLatitude, provider.mapLongitude);
+    if (saved) {
+      const precision = clean(provider.mapPointPrecision || provider.geoPrecision).toLowerCase();
+      const coarse = !/^(?:street|address|address_point|building|matched_address|osm_house_number|osm_reverse_house_number_verified_2026|osm_exact_house_number_verified_2026|national_address_point|plus_code_3m|recovered_short_plus_code|operator_published_business_gps|office_building_operator_gps)$/.test(precision);
+      els.mapMatches.hidden = true;
+      els.mapMatches.replaceChildren();
+      showMapResult({ lat: saved.lat, lon: saved.lon, display_name: mapQuery(provider) || locationText(provider), zoom: coarse ? 8 : 16 }, { provider, coarse });
       return;
     }
     const query = mapQuery(provider);
@@ -1168,7 +1294,6 @@
       button.append(small);
       button.addEventListener("click", () => {
         selectProvider(provider, { navigate: true });
-        locateProvider(provider);
       });
       els.mapMatches.append(button);
     }
@@ -1281,6 +1406,40 @@
     setMapMessage("Provider data is unavailable, so the provider nodes cannot be displayed. Try again to reload the directory.", true);
   }
 
+  function validCoordinatePair(latitude, longitude) {
+    if (latitude === null || latitude === undefined || latitude === "" ||
+        longitude === null || longitude === undefined || longitude === "") return null;
+    const lat = Number(latitude), lon = Number(longitude);
+    return Number.isFinite(lat) && Number.isFinite(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
+      ? { lat, lon } : null;
+  }
+
+  function normalizeProvider(record) {
+    const normalized = { ...record };
+    for (const [key, value] of Object.entries(record)) {
+      const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+      if (!(camelKey in normalized)) normalized[camelKey] = value;
+    }
+    const main = validCoordinatePair(normalized.mapLatitude ?? normalized.latitude, normalized.mapLongitude ?? normalized.longitude);
+    const address = validCoordinatePair(normalized.addressLatitude, normalized.addressLongitude);
+    const country = clean(normalized.countryCode).toUpperCase();
+    const addressCountry = clean(normalized.addressCountryCode).toUpperCase();
+    const precision = clean(normalized.addressGeocodePrecision).toLowerCase();
+    const detailedAddress = /^(?:osm_reverse_house_number_verified_2026|osm_exact_house_number_verified_2026|osm_house_number|address_point|matched_address|building|national_address_point|operator_published_business_gps|office_building_operator_gps|plus_code_3m|recovered_short_plus_code)$/.test(precision);
+    const addressCountryMatches = Boolean(country && addressCountry && country === addressCountry);
+    const chosen = address && addressCountryMatches && (detailedAddress || !main) ? address : main;
+    if (chosen) {
+      normalized.mapLatitude = chosen.lat;
+      normalized.mapLongitude = chosen.lon;
+      normalized.mapPointPrecision = chosen === address ? precision : clean(normalized.geoPrecision || normalized.mapPrecision);
+    } else {
+      normalized.mapLatitude = null;
+      normalized.mapLongitude = null;
+      normalized.mapPointPrecision = "";
+    }
+    return normalized;
+  }
+
   async function loadDirectory() {
     setSearchFeedback("");
     let stage = "requesting providers.json";
@@ -1292,16 +1451,8 @@
       const records = Array.isArray(payload) ? payload : payload.records;
       if (!Array.isArray(records) || records.length === 0) throw new Error("No provider records found");
       stage = "preparing provider records";
-      providers = records.map((record) => {
-        const normalized = { ...record };
-        for (const [key, value] of Object.entries(record)) {
-          const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
-          if (!(camelKey in normalized)) normalized[camelKey] = value;
-        }
-        if (normalized.mapLatitude == null) normalized.mapLatitude = normalized.latitude;
-        if (normalized.mapLongitude == null) normalized.mapLongitude = normalized.longitude;
-        return normalized;
-      });
+      providers = records.filter((record) => record && typeof record === "object" && !Array.isArray(record)).map(normalizeProvider);
+      if (!providers.length) throw new Error("No usable provider records found");
       setStats(providers);
       const asOf = $("#data-as-of");
       if (asOf) asOf.textContent = formatSnapshotDate(payload.asOf);
@@ -1378,6 +1529,21 @@
     const splash = $(".brand-splash");
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) splash?.remove();
     else window.setTimeout(() => splash?.remove(), 1950);
+    const searchHelp = $("#search-help");
+    if (searchHelp) {
+      const scoreExample = document.createElement("code");
+      scoreExample.textContent = "stars:>=4";
+      searchHelp.append(document.createTextNode(" Filter availability ratings with "), scoreExample, document.createTextNode("."));
+    }
+    const mapPolicy = els.mapMessage?.nextElementSibling;
+    if (mapPolicy?.classList.contains("map-policy")) {
+      const policyLink = mapPolicy.querySelector("a");
+      if (policyLink) mapPolicy.replaceChildren(
+        document.createTextNode("Markers use saved address, city, or region coordinates. Precision varies, and a map point does not verify a provider's location. Map tiles and place searches use OpenStreetMap. "),
+        policyLink,
+        document.createTextNode(".")
+      );
+    }
     initMap();
     bindControls();
     const params = new URLSearchParams(window.location.search);
@@ -1392,6 +1558,7 @@
 
   start();
 })();
+
 
 
 
