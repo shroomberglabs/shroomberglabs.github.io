@@ -363,9 +363,8 @@
       if (token.kind === "text") matched = fullText.includes(token.value);
       else if (token.kind === "field") matched = fieldValues(provider, token.keys).some((value) => value.includes(token.value));
       else if (token.kind === "stars") {
-        const score = provider.availabilityStars === null || provider.availabilityStars === undefined || provider.availabilityStars === ""
-          ? NaN : Number(provider.availabilityStars);
-        if (Number.isFinite(score) && score >= 1 && score <= 5) {
+        const score = availabilityScoreFor(provider);
+        if (score !== null) {
           matched = token.operator === ">=" ? score >= token.value
             : token.operator === "<=" ? score <= token.value
               : token.operator === ">" ? score > token.value
@@ -479,6 +478,18 @@
     return clean(provider.locationContext);
   }
 
+  function availabilityScoreFor(provider) {
+    const status = clean(provider.availability_rating_status || provider.availabilityRatingStatus).toLowerCase();
+    if (status === "unrated") return null;
+    for (const raw of [provider.availability_stars, provider.availabilityStars]) {
+      if (typeof raw !== "string" && typeof raw !== "number") continue;
+      if (raw === null || raw === undefined || clean(raw) === "") continue;
+      const score = Number(raw);
+      if (Number.isInteger(score) && score >= 1 && score <= 5) return score;
+    }
+    return null;
+  }
+
   function clearProfile() {
     selectedId = "";
     window.clearTimeout(profileCloseTimer);
@@ -562,6 +573,28 @@
     topline.append(titleBox, country);
     card.append(topline);
 
+    const availabilityScore = availabilityScoreFor(provider);
+    const ratingSection = document.createElement("section");
+    ratingSection.className = "detail-section";
+    const ratingHeading = document.createElement("h3");
+    ratingHeading.textContent = "Accessibility rating";
+    const ratingText = document.createElement("p");
+    if (availabilityScore !== null) {
+      ratingText.textContent = `${"★".repeat(availabilityScore)}${"☆".repeat(5 - availabilityScore)}  ${availabilityScore} out of 5`;
+      ratingText.setAttribute("aria-label", `Accessibility: ${availabilityScore} out of 5 stars`);
+    } else {
+      ratingText.textContent = "Accessibility score is not available in this provider record.";
+    }
+    const ratingExplanation = document.createElement("p");
+    ratingExplanation.textContent = "This directory score reflects recorded legal status and public access. It is not a customer review or proof of current licensing or availability.";
+    ratingSection.append(ratingHeading, ratingText, ratingExplanation);
+    if (provider.availabilityRatingProvisional === true || clean(provider.availabilityConfidence).toLowerCase() === "low") {
+      const note = document.createElement("p");
+      note.textContent = "This assessment is provisional or has low confidence; confirm details with the provider.";
+      ratingSection.append(note);
+    }
+    card.append(ratingSection);
+
     const location = document.createElement("div");
     location.className = "detail-location";
     const addressTitle = document.createElement("strong");
@@ -634,28 +667,6 @@
       card.append(offeringSection);
     }
     appendDetailSection(card, "Business information", provider.businessStructureSummary);
-    const rawAvailability = provider.availabilityStars ?? provider.availability_stars;
-    const availabilityScore = rawAvailability === null || rawAvailability === undefined || rawAvailability === "" ? null : Number(rawAvailability);
-    const ratingSection = document.createElement("section");
-    ratingSection.className = "detail-section";
-    const ratingHeading = document.createElement("h3");
-    ratingHeading.textContent = "Availability rating";
-    const ratingText = document.createElement("p");
-    if (clean(provider.availabilityRatingStatus).toLowerCase() !== "unrated" && Number.isInteger(availabilityScore) && availabilityScore >= 1 && availabilityScore <= 5) {
-      ratingText.textContent = `${"★".repeat(availabilityScore)}${"☆".repeat(5 - availabilityScore)}  ${availabilityScore} out of 5`;
-      ratingText.setAttribute("aria-label", `Availability: ${availabilityScore} out of 5 stars`);
-    } else {
-      ratingText.textContent = "Not yet rated";
-    }
-    const ratingExplanation = document.createElement("p");
-    ratingExplanation.textContent = "This directory score reflects recorded legal status and public access. It is not a customer review or proof of current licensing or availability.";
-    ratingSection.append(ratingHeading, ratingText, ratingExplanation);
-    if (provider.availabilityRatingProvisional === true || clean(provider.availabilityConfidence).toLowerCase() === "low") {
-      const note = document.createElement("p");
-      note.textContent = "This assessment is provisional or has low confidence; confirm details with the provider.";
-      ratingSection.append(note);
-    }
-    card.append(ratingSection);
     appendDetailSection(card, "Availability", provider.availabilitySummary);
     appendDetailSection(card, "Location context", provider.locationContext);
     appendDetailSection(card, "Research note", provider.researchNote);
@@ -1292,6 +1303,10 @@
       const small = document.createElement("small");
       small.textContent = [categoryLabel(provider.category), locationText(provider) || "Location not recorded"].filter(Boolean).join(" · ");
       button.append(small);
+      const score = availabilityScoreFor(provider);
+      const scoreLine = document.createElement("small");
+      scoreLine.textContent = score === null ? "Accessibility score unavailable" : `Accessibility: ${"★".repeat(score)}${"☆".repeat(5 - score)} ${score}/5`;
+      button.append(scoreLine);
       button.addEventListener("click", () => {
         selectProvider(provider, { navigate: true });
       });
